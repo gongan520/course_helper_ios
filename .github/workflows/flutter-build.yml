@@ -45,7 +45,12 @@ jobs:
             Runner.xcodeproj/project.pbxproj
 
       - name: Build iOS release (no codesign)
-        run: flutter build ios --release --no-codesign
+        run: |
+          # 彻底禁用代码签名，避免因 pbxproj 里 CODE_SIGN_STYLE=Automatic 触发签名报错
+          export CODE_SIGNING_ALLOWED=NO
+          export CODE_SIGNING_REQUIRED=NO
+          export CODE_SIGN_IDENTITY=""
+          flutter build ios --release --no-codesign
 
       - name: Package unsigned IPA
         run: |
