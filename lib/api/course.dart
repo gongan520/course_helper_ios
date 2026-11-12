@@ -164,10 +164,10 @@ class RCCourseApi extends Api {
   }
 
   /// 获取正在上课的课程
-  static Future<List<dynamic>?> getOnLesson() async {
+  static Future<List<dynamic>?> getOnLesson({String? userId}) async {
     // final url = '/api/v3/classroom/on-lesson-upcoming-exam';
     final url = '/api/v3/classroom/on-lesson';
-    final response = await ApiService.sendRequest(url);
+    final response = await ApiService.sendRequest(url, userId: userId);
     if (response?.data['code'] == 0){
       return response?.data['data']['onLessonClassrooms'];
     }

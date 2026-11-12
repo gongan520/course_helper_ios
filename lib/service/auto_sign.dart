@@ -13,26 +13,28 @@ import '../utils/logger.dart';
 import '../utils/storage.dart';
 import '../platform.dart';
 
+/// 单个账号的签到模式
+enum AutoSignMode {
+  manual, // 手动：不自动，保持原样
+  auto, // 托管：收到活动/检测到课程自动签到
+  scheduled, // 定时：到时间点自动签到
+}
+
 /// 自动签到配置
 class AutoSignConfig {
-  bool enabled; // 总开关：收到推送自动签到
-  bool scheduledEnabled; // 定时签到开关
+  int pollIntervalSeconds; // 轮询间隔（秒）
   List<String> scheduledTimes; // 定时签到时间点，格式 "HH:mm"
-  int pollIntervalSeconds; // 定时轮询间隔（秒）
-  bool signAllAccounts; // 是否对所有已登录账号签到
-  List<String> selectedAccountIds; // 选中的账号 uid 列表（signAllAccounts=false 时生效）
+  // 每个账号 uid -> 模式
+  Map<String, String> accountModes; // uid -> AutoSignMode.name
 
   AutoSignConfig({
-    this.enabled = false,
-    this.scheduledEnabled = false,
-    List<String>? scheduledTimes,
     this.pollIntervalSeconds = 30,
-    this.signAllAccounts = true,
-    List<String>? selectedAccountIds,
+    List<String>? scheduledTimes,
+    Map<String, String>? accountModes,
   })  : scheduledTimes = scheduledTimes ?? [],
-        selectedAccountIds = selectedAccountIds ?? [];
+        accountModes = accountModes ?? {};
 
-  static const _key = 'auto_sign_config';
+  static const _key = 'auto_sign_config_v2';
 
   static Future<AutoSignConfig> load() async {
     final raw = StorageManager.prefs.getString(_key);
@@ -40,16 +42,13 @@ class AutoSignConfig {
     try {
       final map = json.decode(raw) as Map<String, dynamic>;
       return AutoSignConfig(
-        enabled: map['enabled'] ?? false,
-        scheduledEnabled: map['scheduledEnabled'] ?? false,
+        pollIntervalSeconds: map['pollIntervalSeconds'] ?? 30,
         scheduledTimes: (map['scheduledTimes'] as List?)
             ?.map((e) => e.toString())
             .toList() ?? [],
-        pollIntervalSeconds: map['pollIntervalSeconds'] ?? 30,
-        signAllAccounts: map['signAllAccounts'] ?? true,
-        selectedAccountIds: (map['selectedAccountIds'] as List?)
-            ?.map((e) => e.toString())
-            .toList() ?? [],
+        accountModes: (map['accountModes'] as Map?)
+            ?.map((k, v) => MapEntry(k.toString(), v.toString()))
+            ?? {},
       );
     } catch (e) {
       logger.e('加载自动签到配置失败: $e');
@@ -59,30 +58,43 @@ class AutoSignConfig {
 
   Future<void> save() async {
     await StorageManager.prefs.setString(_key, json.encode({
-      'enabled': enabled,
-      'scheduledEnabled': scheduledEnabled,
-      'scheduledTimes': scheduledTimes,
       'pollIntervalSeconds': pollIntervalSeconds,
-      'signAllAccounts': signAllAccounts,
-      'selectedAccountIds': selectedAccountIds,
+      'scheduledTimes': scheduledTimes,
+      'accountModes': accountModes,
     }));
   }
 
-  /// 根据配置筛选出需要签到的账号列表
-  ///
-  /// 返回已登录且状态正常的账号中，符合当前选择配置的那部分。
-  List<User> resolveAccounts() {
-    final active = AccountManager.allAccounts.where((u) => u.status).toList();
-    if (signAllAccounts) return active;
-    return active.where((u) => selectedAccountIds.contains(u.uid)).toList();
+  /// 获取指定账号的签到模式，默认手动
+  AutoSignMode modeOf(String uid) {
+    final raw = accountModes[uid];
+    if (raw == null) return AutoSignMode.manual;
+    return AutoSignMode.values.firstWhere(
+      (m) => m.name == raw,
+      orElse: () => AutoSignMode.manual,
+    );
+  }
+
+  /// 设置指定账号的模式
+  void setMode(String uid, AutoSignMode mode) {
+    accountModes[uid] = mode.name;
+  }
+
+  /// 是否有任何账号开启了自动或定时签到
+  bool get hasAnyActive {
+    return accountModes.values.any(
+      (v) => v == AutoSignMode.auto.name || v == AutoSignMode.scheduled.name,
+    );
   }
 }
 
 /// 自动签到服务
 ///
 /// 功能：
-/// 1. 自动签到：收到环信 IM 推送的签到活动消息时，自动执行签到
-/// 2. 定时签到：按固定时间点 + 周期轮询检测新签到活动并自动签
+/// 1. 托管（自动）：雨课堂轮询正在上课的课自动签到；学习通收到环信推送自动签
+/// 2. 定时：到固定时间点自动签到
+/// 3. 手动：不自动，保持原样
+///
+/// 每个账号独立设置模式（托管/定时/手动）。
 class AutoSignService {
   AutoSignService._internal();
   static final AutoSignService _instance = AutoSignService._internal();
@@ -94,9 +106,9 @@ class AutoSignService {
   Timer? _pollTimer;
   Timer? _scheduleTimer;
 
-  // 已处理过的活动 id，避免重复签到
-  final Set<String> _processedActiveIds = {};
-  // 正在处理的活动 id，防止并发重复
+  // 已处理过的活动/课程 id，避免重复签到
+  final Set<String> _processedIds = {};
+  // 正在处理的 id，防止并发重复
   final Set<String> _inProgressIds = {};
 
   bool get isRunning => _pollTimer != null || _scheduleTimer != null;
@@ -105,8 +117,7 @@ class AutoSignService {
   Future<void> initialize() async {
     _config = await AutoSignConfig.load();
     _startTimers();
-    logger.i('自动签到服务已初始化: enabled=${_config.enabled}, '
-        'scheduled=${_config.scheduledEnabled}');
+    logger.i('自动签到服务已初始化: 账号模式数=${_config.accountModes.length}');
   }
 
   /// 更新配置并重启定时器
@@ -122,20 +133,21 @@ class AutoSignService {
     _pollTimer = null;
     _scheduleTimer = null;
 
-    if (!_config.enabled) return;
+    // 没有任何账号开启自动/定时则完全不轮询
+    if (!_config.hasAnyActive) return;
 
-    // 周期轮询：检测新签到活动
-    if (_config.scheduledEnabled || _config.pollIntervalSeconds > 0) {
+    // 周期轮询：托管模式检测签到（雨课堂轮询课程、学习通轮询活动）
+    if (_config.pollIntervalSeconds > 0) {
       _pollTimer = Timer.periodic(
         Duration(seconds: _config.pollIntervalSeconds),
-        (_) => _pollForNewSignIns(),
+        (_) => _pollSignIns(),
       );
       // 启动后立即轮询一次
-      Future.delayed(const Duration(seconds: 3), () => _pollForNewSignIns());
+      Future.delayed(const Duration(seconds: 3), () => _pollSignIns());
     }
 
-    // 固定时间点签到
-    if (_config.scheduledEnabled && _config.scheduledTimes.isNotEmpty) {
+    // 固定时间点检测（定时模式）
+    if (_config.scheduledTimes.isNotEmpty) {
       _scheduleTimer = Timer.periodic(const Duration(seconds: 20), (_) {
         _checkScheduledTimes();
       });
@@ -147,9 +159,9 @@ class AutoSignService {
     _scheduleTimer?.cancel();
   }
 
-  /// 固定时间点检测
+  /// 固定时间点检测（定时模式账号）
   void _checkScheduledTimes() {
-    if (!_config.enabled || !_config.scheduledEnabled) return;
+    if (_config.scheduledTimes.isEmpty) return;
     final now = DateTime.now();
     final nowStr =
         '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
@@ -159,68 +171,143 @@ class AutoSignService {
     for (final t in _config.scheduledTimes) {
       if (t.trim() == nowStr) {
         logger.i('命中定时签到时间点: $nowStr');
-        _pollForNewSignIns(forceSign: true);
+        _pollSignIns(scheduledOnly: true);
         break;
       }
     }
   }
 
-  /// 收到推送活动消息时的自动签到入口
+  /// 收到推送活动消息时的自动签到入口（仅学习通环信推送）
   ///
   /// 由 EasemobIM 在收到签到类活动消息时调用。
   Future<void> onActivityPushed(Active active, String courseId, String classId) async {
-    if (!_config.enabled) return;
     // 只处理签到类活动
     if (active.activeType != ActiveType.signIn &&
         active.activeType != ActiveType.scheduledSignIn) {
       return;
     }
     logger.i('收到签到活动推送，准备自动签到: ${active.name}');
-    await _autoSignActive(active, courseId, classId);
+    await _autoSignChaoxingActive(active, courseId, classId, scheduledOnly: false);
   }
 
-  /// 轮询检测新签到活动
-  Future<void> _pollForNewSignIns({bool forceSign = false}) async {
-    if (!_config.enabled) return;
-    if (!PlatformManager().isChaoxing) return; // 仅支持学习通
-    if (!AccountManager.hasActiveSession()) return;
-
+  /// 周期轮询签到
+  ///
+  /// [scheduledOnly] 为 true 时只处理「定时」模式的账号，否则处理「托管」+「定时」。
+  Future<void> _pollSignIns({bool scheduledOnly = false}) async {
+    if (!_config.hasAnyActive) return;
     try {
-      final courseList = await CXCourseApi.getCoursesList();
-      if (courseList == null || courseList.isEmpty) return;
-
-      final currentUser = AccountManager.currentUser;
-      if (currentUser == null) return;
-
-      final api = CXCourseApi(currentUser);
-      for (final course in courseList) {
-        final classId = course.classId;
-        final cpi = course.cpi;
-        if (classId.isEmpty || cpi == null || cpi.isEmpty) continue;
-
-        final activeList = await api.getActiveList(course.courseId, classId, cpi);
-        if (activeList == null) continue;
-
-        for (final active in activeList) {
-          if (active.activeType != ActiveType.signIn &&
-              active.activeType != ActiveType.scheduledSignIn) {
-            continue;
-          }
-          // 只处理进行中的签到（status == true）
-          if (!active.status) continue;
-          // 未处理过的签到活动才自动签
-          if (_processedActiveIds.contains(active.id) && !forceSign) continue;
-          logger.i('轮询发现新签到活动: ${active.name}');
-          await _autoSignActive(active, course.courseId, classId);
-        }
+      if (PlatformManager().isRainClassroom) {
+        await _pollRainClassroom(scheduledOnly: scheduledOnly);
+      } else {
+        await _pollChaoxing(scheduledOnly: scheduledOnly);
       }
     } catch (e, st) {
-      logger.e('轮询签到活动失败: $e\n$st');
+      logger.e('轮询签到失败: $e\n$st');
     }
   }
 
-  /// 执行单个签到活动的自动签到
-  Future<void> _autoSignActive(Active active, String courseId, String classId) async {
+  /// 筛选出指定模式下需要处理的账号
+  List<User> _accountsFor(AutoSignMode mode) {
+    return AccountManager.allAccounts.where((u) {
+      if (!u.status) return false;
+      return _config.modeOf(u.uid) == mode;
+    }).toList();
+  }
+
+  /// 托管模式账号（scheduledOnly=false 时）或定时模式账号（true 时）
+  List<User> _accountsForPoll({required bool scheduledOnly}) {
+    if (scheduledOnly) {
+      return _accountsFor(AutoSignMode.scheduled);
+    }
+    // 托管 + 定时都要处理
+    return AccountManager.allAccounts.where((u) {
+      if (!u.status) return false;
+      final m = _config.modeOf(u.uid);
+      return m == AutoSignMode.auto || m == AutoSignMode.scheduled;
+    }).toList();
+  }
+
+  // ============ 雨课堂 ============
+
+  /// 雨课堂：轮询正在上课的课程，对托管/定时账号自动签到
+  Future<void> _pollRainClassroom({required bool scheduledOnly}) async {
+    final accounts = _accountsForPoll(scheduledOnly: scheduledOnly);
+    if (accounts.isEmpty) return;
+
+    for (final user in accounts) {
+      final api = RCCourseApi(user);
+      // 获取该账号正在上课的课程
+      final onLesson = await RCCourseApi.getOnLesson(userId: user.uid);
+      if (onLesson == null || onLesson.isEmpty) continue;
+
+      for (final lesson in onLesson) {
+        final lessonId = lesson['lessonId']?.toString();
+        if (lessonId == null || lessonId.isEmpty) continue;
+
+        final key = 'rc|${user.uid}|$lessonId';
+        if (_processedIds.contains(key)) continue;
+        _processedIds.add(key);
+
+        // 直接签到（checkIn 内部会 joinIfNotIn 进班并返回结果）
+        final result = await api.checkIn(lessonId);
+        if (result == 0) {
+          logger.i('雨课堂账号 ${user.name} 自动签到成功: $lessonId');
+          _showNotification('雨课堂签到成功', '${user.name} 已签到 $lessonId');
+        } else if (result == 50070) {
+          // 该课堂已开启动态二维码签到，需扫码，无法自动
+          logger.w('雨课堂账号 ${user.name} 课程 $lessonId 开启动态二维码签到，需手动扫码');
+        } else {
+          logger.w('雨课堂账号 ${user.name} 签到返回码: $result');
+        }
+      }
+    }
+  }
+
+  // ============ 学习通 ============
+
+  /// 学习通：轮询活动列表，对托管/定时账号自动签到
+  Future<void> _pollChaoxing({required bool scheduledOnly}) async {
+    if (!AccountManager.hasActiveSession()) return;
+
+    final courseList = await CXCourseApi.getCoursesList();
+    if (courseList == null || courseList.isEmpty) return;
+
+    final accounts = _accountsForPoll(scheduledOnly: scheduledOnly);
+    if (accounts.isEmpty) return;
+
+    final currentUser = AccountManager.currentUser;
+    if (currentUser == null) return;
+
+    final api = CXCourseApi(currentUser);
+    for (final course in courseList) {
+      final classId = course.classId;
+      final cpi = course.cpi;
+      if (classId.isEmpty || cpi == null || cpi.isEmpty) continue;
+
+      final activeList = await api.getActiveList(course.courseId, classId, cpi);
+      if (activeList == null) continue;
+
+      for (final active in activeList) {
+        if (active.activeType != ActiveType.signIn &&
+            active.activeType != ActiveType.scheduledSignIn) {
+          continue;
+        }
+        if (!active.status) continue;
+        if (_processedIds.contains(active.id)) continue;
+        logger.i('轮询发现新签到活动: ${active.name}');
+        await _autoSignChaoxingActive(
+            active, course.courseId, classId, scheduledOnly: scheduledOnly);
+      }
+    }
+  }
+
+  /// 执行学习通单个签到活动的自动签到
+  Future<void> _autoSignChaoxingActive(
+    Active active,
+    String courseId,
+    String classId, {
+    required bool scheduledOnly,
+  }) async {
     if (_inProgressIds.contains(active.id)) return;
     _inProgressIds.add(active.id);
 
@@ -230,26 +317,24 @@ class AutoSignService {
       if (active.signType != null) {
         signType = active.signType!;
       } else {
-        // 获取活动详情以确定签到类型
         final info = await ActiveApi.getActiveInfoWeb(active.id);
         final otherId = info?['otherId'];
         if (otherId == null) {
-          _processedActiveIds.add(active.id);
+          _processedIds.add(active.id);
           return;
         }
         try {
           signType = getSignTypeFromIndex(int.parse(otherId.toString()));
         } catch (e) {
-          _processedActiveIds.add(active.id);
+          _processedIds.add(active.id);
           return;
         }
       }
 
-      // 获取需要签到的账号（按配置筛选）
-      final accounts = _config.resolveAccounts();
+      // 获取需要签到的账号（按模式筛选）
+      final accounts = _accountsForPoll(scheduledOnly: scheduledOnly);
       if (accounts.isEmpty) {
-        logger.w('没有符合自动签到配置的账号，跳过');
-        _processedActiveIds.add(active.id);
+        _processedIds.add(active.id);
         return;
       }
 
@@ -265,7 +350,7 @@ class AutoSignService {
 
       if (needSign.isEmpty) {
         logger.i('活动 ${active.name} 所有账号已签到，跳过');
-        _processedActiveIds.add(active.id);
+        _processedIds.add(active.id);
         return;
       }
 
@@ -286,7 +371,7 @@ class AutoSignService {
         }
       }
 
-      _processedActiveIds.add(active.id);
+      _processedIds.add(active.id);
     } catch (e, st) {
       logger.e('自动签到异常: $e\n$st');
     } finally {
@@ -311,7 +396,6 @@ class AutoSignService {
 
     switch (signType) {
       case SignType.normal:
-        // 普通签到（拍照签到需要 objectId）
         String? objectId;
         if (imageObjectIds.isNotEmpty) {
           objectId = imageObjectIds[0];
@@ -319,23 +403,18 @@ class AutoSignService {
         return await api.normalSign(courseId, active.id, objectId: objectId);
 
       case SignType.qrCode:
-        // 二维码签到需要 enc，但自动场景无法获取动态二维码的 enc
-        // 这里尝试从活动详情获取，通常无法自动完成，记录日志
         logger.w('二维码签到无法自动完成（需要动态二维码内容）: ${active.name}');
         return '二维码签到需要手动扫码';
 
       case SignType.pattern:
-        // 手势签到需要手势密码，无法自动
         logger.w('手势签到无法自动完成（需要手势密码）: ${active.name}');
         return '手势签到需要手动输入';
 
       case SignType.code:
-        // 签到码签到需要签到码，无法自动
         logger.w('签到码签到无法自动完成（需要签到码）: ${active.name}');
         return '签到码签到需要手动输入';
 
       case SignType.location:
-        // 位置签到：使用课程配置的位置
         if (address == null || lat == null || lng == null) {
           logger.w('位置签到缺少位置配置: ${active.name}');
           return '位置签到需要先配置位置';
@@ -350,7 +429,6 @@ class AutoSignService {
 
   void _showNotification(String title, String body) {
     try {
-      // 使用 ScaffoldMessenger 或系统通知（这里仅日志 + 可选弹窗）
       logger.i('[$title] $body');
     } catch (e) {
       logger.e('通知失败: $e');

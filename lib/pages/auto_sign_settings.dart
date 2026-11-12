@@ -4,6 +4,8 @@ import '../service/auto_sign.dart';
 import '../session/account.dart';
 
 /// 自动签到 / 定时签到设置页
+///
+/// 每个账号独立选择模式：托管（自动）/ 定时 / 手动
 class AutoSignSettingsPage extends StatefulWidget {
   const AutoSignSettingsPage({super.key});
 
@@ -13,7 +15,6 @@ class AutoSignSettingsPage extends StatefulWidget {
 
 class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
   late AutoSignConfig _config;
-  final TextEditingController _timeController = TextEditingController();
 
   @override
   void initState() {
@@ -47,8 +48,57 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
     }
   }
 
-  /// 构建账号勾选列表
-  Widget _buildAccountSelector() {
+  /// 构建单个账号的模式三选一按钮组
+  Widget _buildModeSelector(String uid) {
+    final current = _config.modeOf(uid);
+
+    Widget _btn(AutoSignMode mode, String label, Color activeColor) {
+      final selected = current == mode;
+      return Expanded(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 2),
+          child: InkWell(
+            onTap: () => setState(() => _config.setMode(uid, mode)),
+            borderRadius: BorderRadius.circular(6),
+            child: Container(
+              padding: const EdgeInsets.symmetric(vertical: 7),
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: selected
+                    ? activeColor
+                    : Theme.of(context).colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(6),
+                border: selected
+                    ? Border.all(color: activeColor, width: 1)
+                    : null,
+              ),
+              child: Text(
+                label,
+                style: TextStyle(
+                  fontSize: 13,
+                  color: selected
+                      ? Colors.white
+                      : Theme.of(context).colorScheme.onSurfaceVariant,
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Row(
+      children: [
+        _btn(AutoSignMode.auto, '托管', const Color(0xFF2BBBAD)),
+        _btn(AutoSignMode.scheduled, '定时', const Color(0xFF7E57C2)),
+        _btn(AutoSignMode.manual, '手动', const Color(0xFF90A4AE)),
+      ],
+    );
+  }
+
+  /// 构建账号列表
+  Widget _buildAccountList() {
     final accounts = AccountManager.allAccounts;
     if (accounts.isEmpty) {
       return Container(
@@ -64,35 +114,121 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
       );
     }
 
-    // 确保新登录的账号默认也被选中（首次进入时若列表为空则全选）
-    if (_config.selectedAccountIds.isEmpty) {
-      _config.selectedAccountIds.addAll(
-        accounts.map((u) => u.uid),
-      );
-    }
+    final hasScheduled = _config.accountModes.values
+        .any((v) => v == AutoSignMode.scheduled.name);
 
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        for (final user in accounts)
-          CheckboxListTile(
-            dense: true,
-            controlAffinity: ListTileControlAffinity.leading,
-            title: Text(user.name),
-            subtitle: Text('账号: ${user.phone}'),
-            secondary: const Icon(Icons.person_outline),
-            value: _config.selectedAccountIds.contains(user.uid),
-            onChanged: _config.enabled
-                ? (checked) => setState(() {
-                    if (checked == true) {
-                      if (!_config.selectedAccountIds.contains(user.uid)) {
-                        _config.selectedAccountIds.add(user.uid);
-                      }
-                    } else {
-                      _config.selectedAccountIds.remove(user.uid);
-                    }
-                  })
-                : null,
+        // 顶部说明
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Text(
+            '为每个账号单独选择签到模式：\n'
+            '• 托管：检测到签到活动/正在上课时自动签到\n'
+            '• 定时：仅在设定的时间点自动签到\n'
+            '• 手动：不自动，保持原样手动签到',
+            style: TextStyle(
+              fontSize: 13,
+              height: 1.6,
+              color: Theme.of(context).colorScheme.outline,
+            ),
           ),
+        ),
+
+        // 账号行
+        for (final user in accounts)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Row(
+              children: [
+                // 账号名
+                Expanded(
+                  flex: 3,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        user.name,
+                        style: const TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w500,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      Text(
+                        user.isRainClassroom ? '雨课堂' : '学习通',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Theme.of(context).colorScheme.outline,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                // 模式三选一
+                Expanded(
+                  flex: 4,
+                  child: _buildModeSelector(user.uid),
+                ),
+              ],
+            ),
+          ),
+
+        // 定时时间点（有定时账号时显示）
+        if (hasScheduled) ...[
+          const SizedBox(height: 8),
+          Text(
+            '定时签到时间点',
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.outline,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          for (final time in _config.scheduledTimes)
+            ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.schedule),
+              title: Text(time),
+              trailing: IconButton(
+                icon: const Icon(Icons.delete_outline),
+                onPressed: () => setState(() {
+                  _config.scheduledTimes.remove(time);
+                }),
+              ),
+            ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton.icon(
+              onPressed: _addTime,
+              icon: const Icon(Icons.add),
+              label: const Text('添加时间点'),
+            ),
+          ),
+          const SizedBox(height: 8),
+        ],
+
+        // 轮询间隔
+        ListTile(
+          dense: true,
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.timer),
+          title: const Text('检测间隔'),
+          trailing: DropdownButton<int>(
+            value: _config.pollIntervalSeconds,
+            items: const [
+              DropdownMenuItem(value: 10, child: Text('10 秒')),
+              DropdownMenuItem(value: 30, child: Text('30 秒')),
+              DropdownMenuItem(value: 60, child: Text('1 分钟')),
+              DropdownMenuItem(value: 120, child: Text('2 分钟')),
+            ],
+            onChanged: (v) => setState(
+              () => _config.pollIntervalSeconds = v ?? 30,
+            ),
+          ),
+        ),
       ],
     );
   }
@@ -108,104 +244,11 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          // 自动签到总开关
-          SwitchListTile(
-            title: const Text('自动签到'),
-            subtitle: const Text('收到签到活动推送时，后台自动完成签到'),
-            value: _config.enabled,
-            onChanged: (v) => setState(() => _config.enabled = v),
-          ),
+          _buildAccountList(),
 
-          // 所有账号签到
-          SwitchListTile(
-            title: const Text('为所有账号签到'),
-            subtitle: const Text('开启后对所有已登录账号签到，关闭则仅对下方勾选的账号签到'),
-            value: _config.signAllAccounts,
-            onChanged: _config.enabled
-                ? (v) => setState(() => _config.signAllAccounts = v)
-                : null,
-          ),
+          const SizedBox(height: 16),
 
-          // 按账号选择（未开启"所有账号"时显示）
-          if (!_config.signAllAccounts) ...[
-            Padding(
-              padding: const EdgeInsets.only(top: 4, bottom: 4),
-              child: Text(
-                '选择自动签到的账号',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.outline,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ),
-            _buildAccountSelector(),
-          ],
-
-          const Divider(),
-
-          // 定时签到
-          SwitchListTile(
-            title: const Text('定时签到'),
-            subtitle: const Text('在设定的时间点自动检查并签到'),
-            value: _config.scheduledEnabled,
-            onChanged: _config.enabled
-                ? (v) => setState(() => _config.scheduledEnabled = v)
-                : null,
-          ),
-
-          if (_config.scheduledEnabled) ...[
-            // 定时时间点列表
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: Text(
-                '定时时间点',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.outline,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ),
-            for (final time in _config.scheduledTimes)
-              ListTile(
-                dense: true,
-                leading: const Icon(Icons.schedule),
-                title: Text(time),
-                trailing: IconButton(
-                  icon: const Icon(Icons.delete_outline),
-                  onPressed: () => setState(() {
-                    _config.scheduledTimes.remove(time);
-                  }),
-                ),
-              ),
-            OutlinedButton.icon(
-              onPressed: _addTime,
-              icon: const Icon(Icons.add),
-              label: const Text('添加时间点'),
-            ),
-
-            const SizedBox(height: 8),
-            ListTile(
-              dense: true,
-              leading: const Icon(Icons.timer),
-              title: const Text('轮询间隔'),
-              trailing: DropdownButton<int>(
-                value: _config.pollIntervalSeconds,
-                items: const [
-                  DropdownMenuItem(value: 10, child: Text('10 秒')),
-                  DropdownMenuItem(value: 30, child: Text('30 秒')),
-                  DropdownMenuItem(value: 60, child: Text('1 分钟')),
-                  DropdownMenuItem(value: 120, child: Text('2 分钟')),
-                ],
-                onChanged: (v) => setState(
-                  () => _config.pollIntervalSeconds = v ?? 30,
-                ),
-              ),
-            ),
-          ],
-
-          const SizedBox(height: 24),
-
-          // 提示
+          // 说明
           Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
@@ -214,7 +257,8 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
             ),
             child: const Text(
               '说明：\n'
-              '• 自动签到仅支持学习通平台的「普通签到」和「位置签到」。\n'
+              '• 雨课堂「托管」：轮询检测正在上课的课程，自动签到。\n'
+              '• 学习通「托管」：收到签到推送时自动签到。\n'
               '• 二维码、手势、签到码签到因需要动态内容，无法自动完成。\n'
               '• 位置签到需要先在课程设置中配置好签到位置。\n'
               '• 拍照签到需要先在课程设置中配置好图片。',
