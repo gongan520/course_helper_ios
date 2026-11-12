@@ -17,7 +17,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <application
-        android:label="Course Helper"
+        android:label="JUST DO IT"
         android:name=".MyApplication"
         android:icon="@mipmap/ic_launcher">
         

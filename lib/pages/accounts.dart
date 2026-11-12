@@ -337,7 +337,7 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
               ),
               const SizedBox(width: 12),
               const Expanded(
-                child: Text('课程助手'),
+                child: Text('JUST DO IT'),
               ),
             ],
           ),

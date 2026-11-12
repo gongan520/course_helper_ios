@@ -109,7 +109,7 @@ class MyApp extends StatelessWidget {
 
         return MaterialApp(
           navigatorKey: navigatorKey,
-          title: '课程助手',
+          title: 'JUST DO IT',
           locale: const Locale('zh', 'CN'),
           supportedLocales: const [
             Locale('zh', 'CN'),
