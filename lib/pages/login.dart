@@ -30,6 +30,9 @@ Future<bool> handleLoginSuccess(BuildContext context) async {
     await AccountManager.addAccount(user);
 
     if (context.mounted) {
+      // 收起键盘，避免登录后返回账号页键盘仍弹出
+      FocusScope.of(context).unfocus();
+      FocusManager.instance.primaryFocus?.unfocus();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('${user.name} 登录成功')),
       );
@@ -257,6 +260,7 @@ class _LoginPageState extends State<LoginPage> {
       if (success) {
         final loginSuccess = await handleLoginSuccess(context);
         if (loginSuccess && mounted) {
+          FocusScope.of(context).unfocus();
           Navigator.pop(context, true);
         }
       }
@@ -444,6 +448,7 @@ class _LoginPageState extends State<LoginPage> {
   
             final success = await handleLoginSuccess(context);
             if (success && mounted) {
+              FocusScope.of(context).unfocus();
               Navigator.pop(context, true);
             }
           } else {
@@ -499,6 +504,7 @@ class _LoginPageState extends State<LoginPage> {
             if (result['code'] == 0) {
               final success = await handleLoginSuccess(context);
               if (success && mounted) {
+                FocusScope.of(context).unfocus();
                 Navigator.pop(context, true);
               }
               return;

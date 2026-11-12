@@ -101,6 +101,7 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
       context,
       MaterialPageRoute(builder: (_) => const LoginPage(initialLoginType: 'password')),
     );
+    FocusScope.of(context).unfocus();
     if (result == true) {
       await _loadAccounts();
     }
@@ -111,6 +112,7 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
       context,
       MaterialPageRoute(builder: (_) => const LoginPage(initialLoginType: 'captcha')),
     );
+    FocusScope.of(context).unfocus();
     if (result == true) {
       await _loadAccounts();
     }
@@ -131,6 +133,7 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
 
     qrState.startPolling((bool success) async {
       if (success && await handleLoginSuccess(context) && mounted) {
+        FocusScope.of(context).unfocus();
         Navigator.pop(context, true);
         await _loadAccounts();
       }
