@@ -47,3 +47,4 @@ app.*.map.json
 # 构建产物
 ios-ipa.zip
 ipa_out/
+ipa_out_new/
