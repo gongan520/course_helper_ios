@@ -18,21 +18,57 @@ class Update {
       final currentVersion = packageInfo.version;
 
       final dio = Dio();
+      dio.options.connectTimeout = const Duration(seconds: 10);
+      dio.options.receiveTimeout = const Duration(seconds: 10);
       final response = await dio.get(_latestReleaseUrl);
       final data = response.data;
       final latestVersion = data['tag_name']?.toString().replaceAll('v', '') ?? '';
       final skipVersion = StorageManager.prefs.getString(_skipVersionKey) ?? '';
 
-      if ((ignoreSkip || latestVersion != skipVersion) && _isNewerVersion(latestVersion, currentVersion)) {
+      // 从 release 资产里找 IPA 下载直链，找不到再退回页面链接
+      String downloadUrl = data['html_url'] ?? _latestReleasePageUrl;
+      final assets = data['assets'];
+      if (assets is List && assets.isNotEmpty) {
+        for (final a in assets) {
+          final name = a['name']?.toString() ?? '';
+          final url = a['browser_download_url']?.toString() ?? '';
+          if (name.toLowerCase().endsWith('.ipa') && url.isNotEmpty) {
+            downloadUrl = url;
+            break;
+          }
+        }
+      }
+
+      final hasNewer = (ignoreSkip || latestVersion != skipVersion) &&
+          _isNewerVersion(latestVersion, currentVersion);
+
+      if (hasNewer) {
         _showUpdateDialog(
           latestVersion: latestVersion,
           releaseNotes: data['body'] ?? '暂无更新说明',
-          downloadUrl: data['html_url'] ?? _latestReleasePageUrl
+          downloadUrl: downloadUrl,
         );
+      } else if (ignoreSkip) {
+        // 手动检查：无新版本时给出明确反馈，避免"点了没反应"的错觉
+        _showToast('当前已是最新版本 v$currentVersion');
       }
     } catch (e) {
-      // 忽略更新检查错误
+      // 手动检查失败时也要给出反馈（自动检查则静默）
+      if (ignoreSkip) {
+        _showToast('检查更新失败，请检查网络后重试');
+      }
     }
+  }
+
+  static void _showToast(String msg) {
+    final ctx = navigatorKey.currentContext;
+    if (ctx == null) return;
+    ScaffoldMessenger.of(ctx).showSnackBar(
+      SnackBar(
+        content: Text(msg),
+        duration: const Duration(seconds: 2),
+      ),
+    );
   }
 
   static bool _isNewerVersion(String latest, String current) {
