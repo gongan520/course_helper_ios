@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_tencent_captcha/flutter_tencent_captcha.dart';
 import 'dart:async';
 
@@ -594,6 +595,10 @@ class _LoginPageState extends State<LoginPage> {
               }
             });
           }
+          // 验证码发送成功，焦点回到验证码输入框
+          if (mounted) {
+            _captchaFocusNode.requestFocus();
+          }
         } else {
           final message = result['mes'] ?? '发送验证码失败';
           if (mounted) {
@@ -624,6 +629,10 @@ class _LoginPageState extends State<LoginPage> {
                 );
               }
             });
+          }
+          // 验证码发送成功，焦点回到验证码输入框
+          if (mounted) {
+            _captchaFocusNode.requestFocus();
           }
         } else {
           final message = result['msg'] ?? '发送验证码失败';
@@ -660,6 +669,12 @@ class _LoginPageState extends State<LoginPage> {
         timer.cancel();
       }
     });
+  }
+
+  /// 统一收起键盘：作用到全局持有焦点的节点，并结束自动填充上下文。
+  void _dismissKeyboard() {
+    FocusManager.instance.primaryFocus?.unfocus();
+    TextInput.finishAutofillContext();
   }
 
   Future<void> _showSecurityVerificationDialog() async {
@@ -707,11 +722,8 @@ class _LoginPageState extends State<LoginPage> {
         elevation: 0,
       ),
       body: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: () {
-          FocusScope.of(context).unfocus();
-          FocusManager.instance.primaryFocus?.unfocus();
-        },
+        behavior: HitTestBehavior.translucent,
+        onTap: () => _dismissKeyboard(),
         child: SingleChildScrollView(
           keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
           child: Container(
@@ -727,7 +739,6 @@ class _LoginPageState extends State<LoginPage> {
                   child: TextFormField(
                     controller: _usernameController,
                     keyboardType: TextInputType.number,
-                    autofocus: true,
                     textInputAction: TextInputAction.next,
                     autofillHints: [AutofillHints.username, AutofillHints.telephoneNumber],
                     decoration: InputDecoration(
@@ -759,9 +770,7 @@ class _LoginPageState extends State<LoginPage> {
                     controller: _passwordController,
                     obscureText: !_showPassword,
                     textInputAction: TextInputAction.done,
-                    onFieldSubmitted: (_) {
-                      FocusScope.of(context).unfocus();
-                    },
+                    onFieldSubmitted: (_) => _dismissKeyboard(),
                     autofillHints: [AutofillHints.password],
                     decoration: InputDecoration(
                       labelText: '密码',
@@ -802,9 +811,7 @@ class _LoginPageState extends State<LoginPage> {
                           focusNode: _captchaFocusNode,
                           keyboardType: TextInputType.number,
                           textInputAction: TextInputAction.done,
-                          onFieldSubmitted: (_) {
-                            FocusScope.of(context).unfocus();
-                          },
+                          onFieldSubmitted: (_) => _dismissKeyboard(),
                           autofillHints: [AutofillHints.oneTimeCode],
                           decoration: InputDecoration(
                             labelText: '验证码',
@@ -833,8 +840,8 @@ class _LoginPageState extends State<LoginPage> {
                         child: ElevatedButton(
                           onPressed: () {
                             if (_countdownSeconds == 0 && !_isLoading) {
+                              _dismissKeyboard();
                               _sendCaptcha();
-                              FocusScope.of(context).requestFocus(_captchaFocusNode);
                             }
                           },
                           style: ElevatedButton.styleFrom(
@@ -866,9 +873,14 @@ class _LoginPageState extends State<LoginPage> {
                   child: ElevatedButton(
                     onPressed: _isLoading
                         ? null
-                        : _currentLoginType == '3'
-                        ? _showQRCodeLogin
-                        : _login,
+                        : () {
+                            _dismissKeyboard();
+                            if (_currentLoginType == '3') {
+                              _showQRCodeLogin();
+                            } else {
+                              _login();
+                            }
+                          },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Theme.of(context).colorScheme.primary,
                       foregroundColor: Colors.white,
