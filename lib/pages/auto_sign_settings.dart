@@ -18,6 +18,8 @@ class AutoSignSettingsPage extends StatefulWidget {
 class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
   late AutoSignConfig _config;
   List<SignHistoryRecord> _history = [];
+  // 当前展开定时时间段设置面板的账号 uid
+  final Set<String> _expandedUids = {};
 
   @override
   void initState() {
@@ -49,25 +51,51 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
     }
   }
 
-  Future<void> _addTime() async {
-    final time = await showTimePicker(
+  Future<void> _addTimeRange(String uid) async {
+    final start = await showTimePicker(
       context: context,
       initialTime: TimeOfDay.now(),
+      helpText: '选择开始时间',
     );
-    if (time != null) {
-      final formatted =
-          '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
-      if (!_config.scheduledTimes.contains(formatted)) {
-        setState(() {
-          _config.scheduledTimes.add(formatted);
-          _config.scheduledTimes.sort();
-        });
+    if (start == null || !mounted) return;
+    final end = await showTimePicker(
+      context: context,
+      initialTime: start,
+      helpText: '选择结束时间',
+    );
+    if (end == null || !mounted) return;
+
+    setState(() {
+      final cfg = _config.scheduledOf(uid);
+      cfg.timeRanges.add(
+        TimeRange(start: _formatTimeOfDay(start), end: _formatTimeOfDay(end)),
+      );
+    });
+  }
+
+  String _formatTimeOfDay(TimeOfDay t) =>
+      '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+
+  void _onModeTap(String uid, AutoSignMode mode) {
+    setState(() {
+      final current = _config.modeOf(uid);
+      if (mode == AutoSignMode.scheduled) {
+        if (current == AutoSignMode.scheduled) {
+          // 已处于定时模式，再点一次切换面板展开/收起
+          if (_expandedUids.contains(uid)) {
+            _expandedUids.remove(uid);
+          } else {
+            _expandedUids.add(uid);
+          }
+        } else {
+          _config.setMode(uid, mode);
+          _expandedUids.add(uid);
+        }
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('该时间点已存在')),
-        );
+        _config.setMode(uid, mode);
+        _expandedUids.remove(uid);
       }
-    }
+    });
   }
 
   // ============ 模式相关工具 ============
@@ -131,7 +159,7 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
 
     return Expanded(
       child: InkWell(
-        onTap: () => setState(() => _config.setMode(uid, mode)),
+        onTap: () => _onModeTap(uid, mode),
         borderRadius: BorderRadius.circular(8),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 150),
@@ -282,6 +310,11 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
             ),
             const SizedBox(height: 8),
             _buildModeSelector(user.uid),
+            if (mode == AutoSignMode.scheduled &&
+                _expandedUids.contains(user.uid)) ...[
+              const SizedBox(height: 12),
+              _buildSchedulePanel(user.uid),
+            ],
           ],
         ),
       ),
@@ -302,73 +335,192 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
     );
   }
 
-  // ============ 定时签到时间点 ============
+  // ============ 定时时间段设置面板 ============
 
-  Widget _buildScheduleSection() {
+  Widget _buildSchedulePanel(String uid) {
     final scheme = Theme.of(context).colorScheme;
+    final cfg = _config.scheduledOf(uid);
+    const accent = Color(0xFF7E57C2);
 
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      elevation: 0,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: scheme.outlineVariant),
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: accent.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: accent.withValues(alpha: 0.25)),
       ),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.schedule, size: 18, color: accent),
+              const SizedBox(width: 6),
+              const Text(
+                '定时时间段设置',
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+              ),
+              const Spacer(),
+              InkWell(
+                onTap: () => setState(() => _expandedUids.remove(uid)),
+                borderRadius: BorderRadius.circular(6),
+                child: Padding(
+                  padding: const EdgeInsets.all(4),
+                  child: Icon(
+                    Icons.keyboard_arrow_up,
+                    size: 20,
+                    color: scheme.outline,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            '这个账号的上课时间段（24 小时制）。时间段内会像托管一样持续盯课，有签到就自动签。',
+            style: TextStyle(fontSize: 12, color: scheme.outline, height: 1.5),
+          ),
+          const SizedBox(height: 10),
+          _buildTimeRangeList(cfg),
+          const SizedBox(height: 10),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton.icon(
+              onPressed: () => _addTimeRange(uid),
+              icon: const Icon(Icons.add),
+              label: const Text('添加时间段'),
+              style: OutlinedButton.styleFrom(foregroundColor: accent),
+            ),
+          ),
+          const SizedBox(height: 12),
+          _buildRepeatSelector(cfg),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTimeRangeList(ScheduledAccountConfig cfg) {
+    final scheme = Theme.of(context).colorScheme;
+    const accent = Color(0xFF7E57C2);
+
+    if (cfg.timeRanges.isEmpty) {
+      return Text(
+        '暂无时间段，点击下方按钮添加',
+        style: TextStyle(fontSize: 13, color: scheme.outline),
+      );
+    }
+
+    return Column(
+      children: [
+        for (final range in cfg.timeRanges)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: Row(
               children: [
-                Icon(Icons.schedule, size: 18, color: scheme.primary),
+                const Icon(Icons.access_time, size: 16, color: accent),
                 const SizedBox(width: 6),
-                const Text(
-                  '定时签到时间点',
-                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+                Expanded(
+                  child: Text(
+                    '${range.start} → ${range.end}',
+                    style: const TextStyle(fontSize: 13),
+                  ),
+                ),
+                InkWell(
+                  onTap: () => setState(() => cfg.timeRanges.remove(range)),
+                  borderRadius: BorderRadius.circular(6),
+                  child: Padding(
+                    padding: const EdgeInsets.all(4),
+                    child: Icon(Icons.close, size: 18, color: scheme.outline),
+                  ),
                 ),
               ],
             ),
-            const SizedBox(height: 4),
-            Text(
-              '定时模式下的账号将在这些时间点自动签到',
-              style: TextStyle(fontSize: 12, color: scheme.outline),
-            ),
-            const SizedBox(height: 10),
-            if (_config.scheduledTimes.isEmpty)
-              Text(
-                '暂无时间点，点击下方按钮添加',
-                style: TextStyle(fontSize: 13, color: scheme.outline),
-              )
-            else
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  for (final time in _config.scheduledTimes)
-                    InputChip(
-                      label: Text(time),
-                      avatar: const Icon(Icons.access_time, size: 16),
-                      deleteIconColor: scheme.outline,
-                      onDeleted: () => setState(() {
-                        _config.scheduledTimes.remove(time);
-                      }),
-                    ),
-                ],
+          ),
+      ],
+    );
+  }
+
+  Widget _buildRepeatSelector(ScheduledAccountConfig cfg) {
+    final scheme = Theme.of(context).colorScheme;
+    const accent = Color(0xFF7E57C2);
+
+    const options = [
+      ('everyday', '每天'),
+      ('workday', '工作日'),
+      ('weekend', '周末'),
+      ('custom', '自定义'),
+    ];
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '生效周期',
+          style: TextStyle(fontSize: 12, color: scheme.outline),
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final opt in options)
+              ChoiceChip(
+                label: Text(opt.$2),
+                selected: cfg.repeatType == opt.$1,
+                selectedColor: accent.withValues(alpha: 0.18),
+                labelStyle: TextStyle(
+                  fontSize: 12,
+                  color: cfg.repeatType == opt.$1
+                      ? accent
+                      : scheme.onSurfaceVariant,
+                  fontWeight: cfg.repeatType == opt.$1
+                      ? FontWeight.w600
+                      : FontWeight.normal,
+                ),
+                onSelected: (_) => setState(() => cfg.repeatType = opt.$1),
               ),
-            const SizedBox(height: 8),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: OutlinedButton.icon(
-                onPressed: _addTime,
-                icon: const Icon(Icons.add),
-                label: const Text('添加时间点'),
-              ),
-            ),
           ],
         ),
-      ),
+        if (cfg.repeatType == 'custom') ...[
+          const SizedBox(height: 10),
+          Text(
+            '选择星期（可多选）',
+            style: TextStyle(fontSize: 12, color: scheme.outline),
+          ),
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              for (var d = 1; d <= 7; d++)
+                FilterChip(
+                  label: Text(_weekdayLabel(d)),
+                  selected: cfg.weekdays.contains(d),
+                  selectedColor: accent.withValues(alpha: 0.18),
+                  labelStyle: TextStyle(
+                    fontSize: 12,
+                    color: cfg.weekdays.contains(d)
+                        ? accent
+                        : scheme.onSurfaceVariant,
+                  ),
+                  onSelected: (selected) => setState(() {
+                    if (selected) {
+                      if (!cfg.weekdays.contains(d)) cfg.weekdays.add(d);
+                    } else {
+                      cfg.weekdays.remove(d);
+                    }
+                  }),
+                ),
+            ],
+          ),
+        ],
+      ],
     );
+  }
+
+  String _weekdayLabel(int d) {
+    const labels = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+    return labels[d - 1];
   }
 
   // ============ 通用设置（通知 + 检测间隔） ============
@@ -518,7 +670,7 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
             child: Text(
               '为每个账号单独选择签到模式：\n'
               '• 托管：检测到签到活动/正在上课时自动签到\n'
-              '• 定时：仅在设定的时间点自动签到\n'
+              '• 定时：仅在设定的时间段内自动签到\n'
               '• 手动：不自动，保持原样手动签到',
               style: TextStyle(fontSize: 13, height: 1.6, color: scheme.outline),
             ),
@@ -527,7 +679,6 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
           _buildAccountList(),
 
           const SizedBox(height: 4),
-          _buildScheduleSection(),
           _buildGeneralSection(),
           _buildHistorySection(),
 

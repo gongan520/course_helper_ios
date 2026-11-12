@@ -24,23 +24,73 @@ enum AutoSignMode {
   scheduled, // 定时：到时间点自动签到
 }
 
+/// 一个时间段（24 小时制）
+class TimeRange {
+  String start; // "HH:mm"
+  String end;   // "HH:mm"
+  TimeRange({required this.start, required this.end});
+
+  Map<String, dynamic> toJson() => {'start': start, 'end': end};
+  static TimeRange fromJson(Map<String, dynamic> j) => TimeRange(
+        start: j['start']?.toString() ?? '',
+        end: j['end']?.toString() ?? '',
+      );
+}
+
+/// 单个账号的定时签到配置
+class ScheduledAccountConfig {
+  List<TimeRange> timeRanges; // 时间段列表
+  String repeatType; // 'everyday' | 'workday' | 'weekend' | 'custom'
+  List<int> weekdays; // 1-7（周一=1 ... 周日=7），repeatType=='custom' 时生效
+
+  ScheduledAccountConfig({
+    List<TimeRange>? timeRanges,
+    this.repeatType = 'everyday',
+    List<int>? weekdays,
+  })  : timeRanges = timeRanges ?? [],
+        weekdays = weekdays ?? [];
+
+  Map<String, dynamic> toJson() => {
+        'timeRanges': timeRanges.map((e) => e.toJson()).toList(),
+        'repeatType': repeatType,
+        'weekdays': weekdays,
+      };
+
+  static ScheduledAccountConfig fromJson(Map<String, dynamic>? j) {
+    if (j == null) return ScheduledAccountConfig();
+    return ScheduledAccountConfig(
+      timeRanges: (j['timeRanges'] as List?)
+              ?.map((e) => TimeRange.fromJson((e as Map).cast<String, dynamic>()))
+              .toList() ??
+          [],
+      repeatType: j['repeatType']?.toString() ?? 'everyday',
+      weekdays: (j['weekdays'] as List?)
+              ?.map((e) => int.tryParse(e.toString()) ?? 0)
+              .where((e) => e >= 1 && e <= 7)
+              .toList() ??
+          [],
+    );
+  }
+}
+
 /// 自动签到配置
 class AutoSignConfig {
   int pollIntervalSeconds; // 轮询间隔（秒）
-  List<String> scheduledTimes; // 定时签到时间点，格式 "HH:mm"
+  // 每个账号 uid -> 定时签到配置
+  Map<String, ScheduledAccountConfig> scheduledAccounts; // uid -> 时间段配置
   // 每个账号 uid -> 模式
   Map<String, String> accountModes; // uid -> AutoSignMode.name
   bool notifyOnResult; // 签到成功/失败时是否弹系统通知
 
   AutoSignConfig({
     this.pollIntervalSeconds = 30,
-    List<String>? scheduledTimes,
+    Map<String, ScheduledAccountConfig>? scheduledAccounts,
     Map<String, String>? accountModes,
     this.notifyOnResult = true,
-  })  : scheduledTimes = scheduledTimes ?? [],
+  })  : scheduledAccounts = scheduledAccounts ?? {},
         accountModes = accountModes ?? {};
 
-  static const _key = 'auto_sign_config_v2';
+  static const _key = 'auto_sign_config_v3';
 
   static Future<AutoSignConfig> load() async {
     final raw = StorageManager.prefs.getString(_key);
@@ -49,9 +99,13 @@ class AutoSignConfig {
       final map = json.decode(raw) as Map<String, dynamic>;
       return AutoSignConfig(
         pollIntervalSeconds: map['pollIntervalSeconds'] ?? 30,
-        scheduledTimes: (map['scheduledTimes'] as List?)
-            ?.map((e) => e.toString())
-            .toList() ?? [],
+        scheduledAccounts: (map['scheduledAccounts'] as Map?)
+                ?.map((k, v) => MapEntry(
+                    k.toString(),
+                    ScheduledAccountConfig.fromJson(
+                        (v as Map).cast<String, dynamic>())))
+                ??
+            {},
         accountModes: (map['accountModes'] as Map?)
             ?.map((k, v) => MapEntry(k.toString(), v.toString()))
             ?? {},
@@ -66,10 +120,21 @@ class AutoSignConfig {
   Future<void> save() async {
     await StorageManager.prefs.setString(_key, json.encode({
       'pollIntervalSeconds': pollIntervalSeconds,
-      'scheduledTimes': scheduledTimes,
+      'scheduledAccounts':
+          scheduledAccounts.map((k, v) => MapEntry(k, v.toJson())),
       'accountModes': accountModes,
       'notifyOnResult': notifyOnResult,
     }));
+  }
+
+  /// 获取指定账号的定时配置（不存在则创建并返回，保证可原地修改并持久化）
+  ScheduledAccountConfig scheduledOf(String uid) {
+    return scheduledAccounts.putIfAbsent(uid, () => ScheduledAccountConfig());
+  }
+
+  /// 设置指定账号的定时配置
+  void setScheduled(String uid, ScheduledAccountConfig cfg) {
+    scheduledAccounts[uid] = cfg;
   }
 
   /// 获取指定账号的签到模式，默认手动
@@ -131,6 +196,11 @@ class AutoSignService {
   Timer? _pollTimer;
   Timer? _scheduleTimer;
 
+  // 定时签到：当天已触发的时间窗口 key（uid|start|end|YYYY-MM-DD），用于一天内去重
+  final Set<String> _scheduledTriggeredKeys = {};
+  // 定时签到：临时限定本次轮询只处理这些 uid（null 表示不限制）
+  Set<String>? _scheduledOverrideUids;
+
   // 已处理过的活动/课程 id，避免重复签到
   final Set<String> _processedIds = {};
   // 正在处理的 id，防止并发重复
@@ -189,7 +259,7 @@ class AutoSignService {
     }
 
     // 固定时间点检测（定时模式）
-    if (_config.scheduledTimes.isNotEmpty) {
+    if (_config.scheduledAccounts.isNotEmpty) {
       _scheduleTimer = Timer.periodic(const Duration(seconds: 20), (_) {
         _checkScheduledTimes();
       });
@@ -201,22 +271,90 @@ class AutoSignService {
     _scheduleTimer?.cancel();
   }
 
-  /// 固定时间点检测（定时模式账号）
-  void _checkScheduledTimes() {
-    if (_config.scheduledTimes.isEmpty) return;
+  /// 固定时间点检测（定时模式账号）：按每个账号的时间窗口判断是否触发签到
+  Future<void> _checkScheduledTimes() async {
+    if (_config.scheduledAccounts.isEmpty) return;
     final now = DateTime.now();
-    final nowStr =
-        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
-    // 只允许在每分钟的 0~30 秒内触发一次，避免重复
-    if (now.second > 30) return;
+    final weekday = now.weekday; // 周一=1 ... 周日=7，与 weekdays 定义一致
+    final nowStr = _hhmm(now);
+    final dateStr = _dateStr(now);
 
-    for (final t in _config.scheduledTimes) {
-      if (t.trim() == nowStr) {
-        logger.i('命中定时签到时间点: $nowStr');
-        _pollSignIns(scheduledOnly: true);
-        break;
+    final dueUids = <String>{};
+    for (final user in _accountsFor(AutoSignMode.scheduled)) {
+      final cfg = _config.scheduledOf(user.uid);
+      if (!_matchesRepeat(cfg, weekday)) continue;
+
+      // 命中某个时间窗口（含跨天，如 22:00-01:00）
+      TimeRange? hit;
+      for (final range in cfg.timeRanges) {
+        if (_inTimeRange(nowStr, range.start, range.end)) {
+          hit = range;
+          break;
+        }
       }
+      if (hit == null) continue;
+
+      // 当天去重：key = uid|start|end|YYYY-MM-DD，每天都能重新触发
+      final key = '${user.uid}|${hit.start}|${hit.end}|$dateStr';
+      if (_scheduledTriggeredKeys.contains(key)) continue;
+      _scheduledTriggeredKeys.add(key);
+      dueUids.add(user.uid);
     }
+
+    if (dueUids.isEmpty) return;
+
+    logger.i('命中定时签到窗口，触发账号: ${dueUids.join(', ')}');
+    _scheduledOverrideUids = dueUids;
+    try {
+      await _pollSignIns(scheduledOnly: true);
+    } finally {
+      _scheduledOverrideUids = null;
+    }
+  }
+
+  /// repeatType 是否匹配当前星期几
+  bool _matchesRepeat(ScheduledAccountConfig cfg, int weekday) {
+    switch (cfg.repeatType) {
+      case 'everyday':
+        return true;
+      case 'workday':
+        return weekday >= 1 && weekday <= 5;
+      case 'weekend':
+        return weekday >= 6 && weekday <= 7;
+      case 'custom':
+        return cfg.weekdays.contains(weekday);
+      default:
+        return false;
+    }
+  }
+
+  /// 当前时刻 "HH:mm" 是否落在 [start, end] 内（支持跨天）
+  bool _inTimeRange(String nowStr, String start, String end) {
+    final nowM = _minutesOfDay(nowStr);
+    final startM = _minutesOfDay(start);
+    final endM = _minutesOfDay(end);
+    if (startM <= endM) {
+      return nowM >= startM && nowM <= endM;
+    }
+    // 跨天时间段：如 22:00-01:00
+    return nowM >= startM || nowM <= endM;
+  }
+
+  /// "HH:mm" -> 当日分钟数
+  int _minutesOfDay(String hm) {
+    final parts = hm.split(':');
+    final h = int.tryParse(parts.isNotEmpty ? parts[0] : '') ?? 0;
+    final m = int.tryParse(parts.length > 1 ? parts[1] : '') ?? 0;
+    return h * 60 + m;
+  }
+
+  String _hhmm(DateTime d) =>
+      '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
+
+  String _dateStr(DateTime d) {
+    final m = d.month.toString().padLeft(2, '0');
+    final day = d.day.toString().padLeft(2, '0');
+    return '${d.year}-$m-$day';
   }
 
   /// 收到推送活动消息时的自动签到入口（仅学习通环信推送）
@@ -259,7 +397,13 @@ class AutoSignService {
   /// 托管模式账号（scheduledOnly=false 时）或定时模式账号（true 时）
   List<User> _accountsForPoll({required bool scheduledOnly}) {
     if (scheduledOnly) {
-      return _accountsFor(AutoSignMode.scheduled);
+      var accounts = _accountsFor(AutoSignMode.scheduled);
+      // 定时触发时只处理当前窗口内的指定账号
+      final override = _scheduledOverrideUids;
+      if (override != null) {
+        accounts = accounts.where((u) => override.contains(u.uid)).toList();
+      }
+      return accounts;
     }
     // 托管 + 定时都要处理
     return AccountManager.allAccounts.where((u) {
