@@ -12,6 +12,7 @@ import '../../../api/image.dart';
 import '../../../models/user.dart';
 import '../../../models/active.dart';
 import '../../../session/account.dart';
+import '../../../service/ai_answer.dart';
 import '../../../utils/logger.dart';
 import '../widget/accounts_selector.dart';
 
@@ -84,6 +85,7 @@ class _QuizPageState extends State<QuizPage> {
   // 页面状态
   bool _isLoading = true;
   bool _isSubmitting = false;
+  bool _isAiAnswering = false;
   String? _errorMessage;
   
   // 批量提交状态
@@ -432,6 +434,208 @@ class _QuizPageState extends State<QuizPage> {
           }
         }
         break;
+    }
+  }
+
+  /// 题型 → AI 答题类型映射
+  String? _mapAiType(int quizType) {
+    switch (quizType) {
+      case 0:
+        return 'single';
+      case 1:
+        return 'multiple';
+      case 3:
+      case 16:
+        return 'judge';
+      case 2:
+        return 'blank';
+      case 4:
+      case 5:
+      case 6:
+      case 7:
+      case 18:
+        return 'short';
+      default:
+        return null;
+    }
+  }
+
+  /// 从字符串中提取第一个字母（用于解析 AI 返回的 A/B/C/D）
+  String _extractFirstLetter(String s) {
+    final match = RegExp(r'[A-Za-z]').firstMatch(s);
+    return match?.group(0) ?? '';
+  }
+
+  /// 将 AI 返回的字母（A/B/C/D）映射到选项的 name 字段
+  String? _mapLetterToName(String letter, List answers, int quizType) {
+    final upper = letter.trim().toUpperCase();
+    if (upper.isEmpty) return null;
+    // 按字母序号映射到对应下标的选项
+    final index = upper.codeUnitAt(0) - 'A'.codeUnitAt(0);
+    if (index >= 0 && index < answers.length) {
+      return answers[index]['name'] as String?;
+    }
+    // 回退：直接按 label 匹配
+    for (final option in answers) {
+      if (_getOptionLabel(option, quizType).toUpperCase() == upper) {
+        return option['name'] as String?;
+      }
+    }
+    return null;
+  }
+
+  /// 将 AI 返回的答案填回 personAnswer 对应字段
+  void _fillAiAnswer(dynamic quiz, int quizType, String result, List answers) {
+    final personAnswer = quiz['personAnswer'];
+
+    switch (quizType) {
+      case 0: // 单选题
+        final name = _mapLetterToName(_extractFirstLetter(result), answers, quizType);
+        if (name != null) {
+          personAnswer['myoption'] = name;
+        }
+        break;
+
+      case 1: // 多选题
+        final letters = result.replaceAll(RegExp(r'[^A-Za-z]'), '').toUpperCase();
+        final names = <String>[];
+        for (final ch in letters.split('')) {
+          final name = _mapLetterToName(ch, answers, quizType);
+          if (name != null && !names.contains(name)) names.add(name);
+        }
+        personAnswer['myoption'] = names.join('');
+        break;
+
+      case 3: // 判断题
+      case 16: // 判断题
+        final isTrue = !(result.contains('错') ||
+            result.contains('错误') ||
+            result.toLowerCase().contains('false'));
+        String? matchedName;
+        for (final option in answers) {
+          final name = (option['name'] ?? '').toString().toLowerCase();
+          final label = _getOptionLabel(option, quizType);
+          final optionIsTrue = label == '对' ||
+              name == '1' ||
+              name == 'true' ||
+              name == '对' ||
+              name == '正确';
+          final optionIsFalse = label == '错' ||
+              name == '0' ||
+              name == 'false' ||
+              name == '错' ||
+              name == '错误';
+          if (isTrue && optionIsTrue) {
+            matchedName = option['name'];
+            break;
+          }
+          if (!isTrue && optionIsFalse) {
+            matchedName = option['name'];
+            break;
+          }
+        }
+        if (matchedName != null) {
+          personAnswer['myoption'] = matchedName;
+        }
+        break;
+
+      case 2: // 填空题
+        final blankAnswers = personAnswer['blankAnswer'] as List?;
+        if (blankAnswers != null) {
+          final parts = result.split(';');
+          for (int i = 0; i < blankAnswers.length && i < parts.length; i++) {
+            final part = parts[i].trim();
+            if (part.isNotEmpty) {
+              blankAnswers[i]['content'] = part;
+            }
+          }
+        }
+        break;
+
+      case 4: // 简答题等
+      case 5:
+      case 6:
+      case 7:
+      case 18:
+        personAnswer['content'] = result;
+        break;
+    }
+  }
+
+  /// AI 答题：遍历所有题目，调用 AI 生成答案并回填
+  Future<void> _aiAnswer() async {
+    if (!AiAnswerService().isConfigured) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('请先在自动签到设置页配置 AI API 密钥')),
+        );
+      }
+      return;
+    }
+
+    setState(() => _isAiAnswering = true);
+
+    int failedCount = 0;
+    var hasError = false;
+
+    try {
+      for (var quiz in _quizList) {
+        final quizType = quiz['type'] as int;
+        final aiType = _mapAiType(quizType);
+        if (aiType == null) continue;
+
+        // 题干
+        final question = _extractTextFromHtml(quiz['content'] ?? '');
+
+        // 选项文本列表（仅选择题 / 判断题）
+        final answers = quiz['answer'] as List? ?? [];
+        final hasOptions =
+            aiType == 'single' || aiType == 'multiple' || aiType == 'judge';
+        List<String>? options;
+        if (hasOptions && answers.isNotEmpty) {
+          options = answers.map((option) {
+            final label = _getOptionLabel(option, quizType);
+            final content = _extractTextFromHtml(option['content'] ?? '');
+            return '$label. $content';
+          }).toList();
+        }
+
+        final result = await AiAnswerService().answer(
+          question: question,
+          type: aiType,
+          options: options,
+        );
+
+        if (result == null || result.trim().isEmpty) {
+          failedCount++;
+          continue;
+        }
+
+        _fillAiAnswer(quiz, quizType, result.trim(), answers);
+      }
+    } catch (e) {
+      hasError = true;
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('AI 答题失败：$e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isAiAnswering = false);
+      }
+    }
+
+    if (!mounted || hasError) return;
+
+    if (failedCount > 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('AI 答题完成，$failedCount 题生成失败，请检查后提交')),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('AI 答题完成，请检查答案后提交')),
+      );
     }
   }
 
@@ -1165,8 +1369,31 @@ class _QuizPageState extends State<QuizPage> {
                           initialSelected: _initialSelectedAccounts,
                         ),
                         
+                        const SizedBox(height: 12),
+
+                        // AI 答题按钮
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          child: OutlinedButton.icon(
+                            onPressed: _isAiAnswering ? null : _aiAnswer,
+                            icon: _isAiAnswering
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(strokeWidth: 2),
+                                  )
+                                : const Icon(Icons.smart_toy_outlined),
+                            label: Text(_isAiAnswering ? 'AI 答题中...' : 'AI 答题'),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: const Color(0xFF7E57C2),
+                              minimumSize: const Size(double.infinity, 44),
+                              side: const BorderSide(color: Color(0xFF7E57C2)),
+                            ),
+                          ),
+                        ),
+
                         const SizedBox(height: 16),
-                        
+
                         // 提交按钮
                         Container(
                           padding: const EdgeInsets.all(16),

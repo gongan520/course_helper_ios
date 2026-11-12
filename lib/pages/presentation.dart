@@ -17,6 +17,7 @@ import '../models/presentation.dart';
 import '../session/account.dart';
 import '../platform.dart';
 import '../push/notification.dart';
+import '../service/ai_answer.dart';
 import '../utils/logger.dart';
 import '../utils/storage.dart';
 import '../utils/time.dart';
@@ -73,6 +74,10 @@ class _PresentationPageState extends State<PresentationPage> {
   List<String>? _answer;
   String? _textAnswer;
   bool _isProblemExpanded = true;
+
+  // AI 答题相关
+  bool _isAiAnswering = false;
+  final TextEditingController _shortAnswerController = TextEditingController();
   
   // 图片选择相关
   final List<XFile> _selectedImages = [];
@@ -114,6 +119,7 @@ class _PresentationPageState extends State<PresentationPage> {
     _ws?.close();
     _pageController.dispose();
     _scrollController.dispose();
+    _shortAnswerController.dispose();
     _stopForegroundService();
 
     // 恢复方向与系统栏
@@ -1178,6 +1184,29 @@ class _PresentationPageState extends State<PresentationPage> {
                                         Row(
                                           mainAxisAlignment: MainAxisAlignment.end,
                                           children: [
+                                            OutlinedButton.icon(
+                                              onPressed: _isAiAnswering ? null : _aiAnswer,
+                                              style: OutlinedButton.styleFrom(
+                                                foregroundColor: const Color(0xFF7E57C2),
+                                                side: const BorderSide(color: Color(0xFF7E57C2)),
+                                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                                              ),
+                                              icon: _isAiAnswering
+                                                  ? const SizedBox(
+                                                      width: 16,
+                                                      height: 16,
+                                                      child: CircularProgressIndicator(
+                                                        strokeWidth: 2,
+                                                        color: Color(0xFF7E57C2),
+                                                      ),
+                                                    )
+                                                  : const Icon(Icons.smart_toy_outlined, size: 18),
+                                              label: Text(
+                                                _isAiAnswering ? 'AI 生成中...' : 'AI 答题',
+                                                style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 12),
                                             ElevatedButton(
                                               onPressed: () async {await _submitAnswer();},
                                               style: ElevatedButton.styleFrom(
@@ -1426,6 +1455,170 @@ class _PresentationPageState extends State<PresentationPage> {
     }
   }
 
+  /// AI 答题：调用 AI 生成当前题目的答案并自动填入。
+  Future<void> _aiAnswer() async {
+    final problem = _currentProblem;
+    if (problem == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('当前没有题目')),
+        );
+      }
+      return;
+    }
+
+    if (!AiAnswerService().isConfigured) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('请先在自动签到设置页配置 AI API 密钥')),
+        );
+      }
+      return;
+    }
+
+    setState(() => _isAiAnswering = true);
+
+    try {
+      final question = problem.body;
+      final options = problem.options
+              ?.map((o) => o.value)
+              .where((v) => v.isNotEmpty)
+              .toList() ??
+          [];
+
+      String? aiType;
+      String? raw;
+
+      switch (problem.problemType) {
+        case 1: // 单选题（判断题在 PPT 也是单选题）
+          aiType = 'single';
+          raw = await AiAnswerService().answer(
+            question: question, type: aiType, options: options);
+          if (raw != null) {
+            final key = _mapLetterToKey(raw, problem.options);
+            if (key != null) {
+              setState(() => _answer = [key]);
+            }
+          }
+          break;
+
+        case 2: // 多选题
+        case 3: // 投票题（按多选处理）
+          aiType = 'multiple';
+          raw = await AiAnswerService().answer(
+            question: question, type: aiType, options: options);
+          if (raw != null) {
+            final keys = _mapLettersToKeys(raw, problem.options);
+            if (keys.isNotEmpty) {
+              setState(() => _answer = keys);
+            }
+          }
+          break;
+
+        case 4: // 填空题
+          aiType = 'blank';
+          raw = await AiAnswerService().answer(
+            question: question, type: aiType, options: null);
+          if (raw != null) {
+            final blanks = problem.blanks;
+            if (blanks.isEmpty) {
+              setState(() => _answer = [raw]);
+            } else {
+              final parts = raw.split(';').map((e) => e.trim()).toList();
+              setState(() {
+                _answer = List.generate(blanks.length, (i) {
+                  return i < parts.length ? parts[i] : '';
+                });
+              });
+            }
+          }
+          break;
+
+        case 5: // 主观题
+          aiType = 'short';
+          raw = await AiAnswerService().answer(
+            question: question, type: aiType, options: null);
+          if (raw != null) {
+            setState(() {
+              _textAnswer = raw;
+              _shortAnswerController.text = raw;
+            });
+          }
+          break;
+
+        default:
+          aiType = 'short';
+          raw = await AiAnswerService().answer(
+            question: question, type: aiType, options: null);
+          if (raw != null) {
+            setState(() {
+              _textAnswer = raw;
+              _shortAnswerController.text = raw;
+            });
+          }
+          break;
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(raw != null ? 'AI 答题完成，请检查答案后提交' : 'AI 生成失败，请重试'),
+          ),
+        );
+      }
+    } catch (e) {
+      logger.e('AI 答题异常: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('AI 答题失败，请重试')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isAiAnswering = false);
+      }
+    }
+  }
+
+  /// 把 AI 返回的单个字母（如 "A"）映射为选项 key。
+  String? _mapLetterToKey(String raw, List<ProblemOption>? options) {
+    if (options == null || options.isEmpty) return null;
+    final letter = raw.trim().toUpperCase().replaceAll(RegExp(r'[^A-Z]'), '');
+    if (letter.isEmpty) return null;
+    final idx = letter.codeUnitAt(0) - 65;
+    if (idx >= 0 && idx < options.length) {
+      return options[idx].key;
+    }
+    // 直接匹配 key（某些 key 本身就是字母）
+    for (final o in options) {
+      if (o.key.toUpperCase() == letter) return o.key;
+    }
+    return null;
+  }
+
+  /// 把 AI 返回的字母组合（如 "ABD"）映射为选项 key 列表。
+  List<String> _mapLettersToKeys(String raw, List<ProblemOption>? options) {
+    if (options == null || options.isEmpty) return [];
+    final letters = raw.trim().toUpperCase().replaceAll(RegExp(r'[^A-Z]'), '');
+    final keys = <String>[];
+    for (var i = 0; i < letters.length; i++) {
+      final idx = letters.codeUnitAt(i) - 65;
+      if (idx >= 0 && idx < options.length) {
+        final k = options[idx].key;
+        if (!keys.contains(k)) keys.add(k);
+      }
+    }
+    // 若按位置映射失败，尝试直接匹配 key
+    if (keys.isEmpty) {
+      for (final o in options) {
+        if (letters.contains(o.key.toUpperCase())) {
+          keys.add(o.key);
+        }
+      }
+    }
+    return keys;
+  }
+
   Future<void> _submitAnswer() async {
     // 优先使用 _currentProblem，如果为空则使用 _timelineProblemId
     final problemId = _currentProblem?.problemId ?? _timelineProblemId;
@@ -1623,6 +1816,7 @@ class _PresentationPageState extends State<PresentationPage> {
                   border: OutlineInputBorder(),
                 ),
                 maxLines: 3,
+                controller: _shortAnswerController,
                 onChanged: (value) {
                   _textAnswer = value;
                 },

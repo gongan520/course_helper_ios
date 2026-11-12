@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/user.dart';
+import '../service/ai_answer.dart';
 import '../service/auto_sign.dart';
 import '../service/sign_history.dart';
 import '../session/account.dart';
@@ -21,11 +22,28 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
   // 当前展开定时时间段设置面板的账号 uid
   final Set<String> _expandedUids = {};
 
+  // AI 答题配置输入框控制器
+  late final TextEditingController _aiApiKeyController;
+  late final TextEditingController _aiBaseUrlController;
+  late final TextEditingController _aiModelController;
+
   @override
   void initState() {
     super.initState();
     _config = AutoSignService().config;
+    final aiConfig = AiAnswerService().config;
+    _aiApiKeyController = TextEditingController(text: aiConfig.apiKey);
+    _aiBaseUrlController = TextEditingController(text: aiConfig.baseUrl);
+    _aiModelController = TextEditingController(text: aiConfig.model);
     _loadHistory();
+  }
+
+  @override
+  void dispose() {
+    _aiApiKeyController.dispose();
+    _aiBaseUrlController.dispose();
+    _aiModelController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadHistory() async {
@@ -287,6 +305,32 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
                     ],
                   ),
                 ),
+                InkWell(
+                  onTap: _showAiAnswerDialog,
+                  borderRadius: BorderRadius.circular(6),
+                  child: const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.smart_toy_outlined,
+                          size: 16,
+                          color: Color(0xFF7E57C2),
+                        ),
+                        SizedBox(width: 4),
+                        Text(
+                          'AI 答题',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Color(0xFF7E57C2),
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
               ],
             ),
             const SizedBox(height: 12),
@@ -317,6 +361,32 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
             ],
           ],
         ),
+      ),
+    );
+  }
+
+  // ============ AI 答题说明对话框 ============
+
+  void _showAiAnswerDialog() {
+    final configured = AiAnswerService().isConfigured;
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('AI 答题'),
+        content: Text(
+          '使用 AI（DeepSeek 等）在考试/作业中自动生成答案。\n\n'
+          '使用方法：\n'
+          '1. 在自动签到设置页底部配置 AI API 密钥\n'
+          '2. 打开某个测验/练习活动\n'
+          '3. 点击答题页的"AI 答题"按钮自动生成答案'
+          '${configured ? '' : '\n\n当前未配置 API 密钥。'}',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('知道了'),
+          ),
+        ],
       ),
     );
   }
@@ -649,6 +719,104 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
     return '${two(time.month)}-${two(time.day)} ${two(time.hour)}:${two(time.minute)}';
   }
 
+  // ============ AI 答题设置 ============
+
+  Widget _buildAiAnswerSection() {
+    final scheme = Theme.of(context).colorScheme;
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: scheme.outlineVariant),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 标题行
+            Row(
+              children: [
+                Icon(Icons.smart_toy_outlined, size: 18, color: scheme.primary),
+                const SizedBox(width: 6),
+                const Text(
+                  'AI 答题设置',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              '接入 DeepSeek 等 OpenAI 兼容 AI，用于考试/作业自动生成答案。',
+              style: TextStyle(fontSize: 12, color: scheme.outline, height: 1.5),
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _aiApiKeyController,
+              obscureText: true,
+              decoration: const InputDecoration(
+                labelText: 'API 密钥',
+                hintText: 'sk-...',
+                isDense: true,
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _aiBaseUrlController,
+              decoration: const InputDecoration(
+                labelText: 'API 地址',
+                hintText: 'https://api.deepseek.com',
+                isDense: true,
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _aiModelController,
+              decoration: const InputDecoration(
+                labelText: '模型名',
+                hintText: 'deepseek-chat',
+                isDense: true,
+                border: OutlineInputBorder(),
+              ),
+            ),
+            if (_aiApiKeyController.text.isEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                '未配置 API 密钥，AI 答题不可用',
+                style: TextStyle(fontSize: 12, color: scheme.error),
+              ),
+            ],
+            const SizedBox(height: 12),
+            FilledButton.icon(
+              onPressed: _saveAiConfig,
+              icon: const Icon(Icons.save_outlined),
+              label: const Text('保存 AI 配置'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _saveAiConfig() async {
+    final cfg = AiAnswerConfig(
+      apiKey: _aiApiKeyController.text.trim(),
+      baseUrl: _aiBaseUrlController.text.trim(),
+      model: _aiModelController.text.trim(),
+    );
+    await AiAnswerService().updateConfig(cfg);
+    if (mounted) {
+      setState(() {});
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('AI 配置已保存')),
+      );
+    }
+  }
+
   // ============ 主界面 ============
 
   @override
@@ -681,6 +849,7 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
           const SizedBox(height: 4),
           _buildGeneralSection(),
           _buildHistorySection(),
+          _buildAiAnswerSection(),
 
           // 说明
           Container(
