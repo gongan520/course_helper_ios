@@ -9,54 +9,57 @@ import '../utils/storage.dart';
 class Update {
   static const _skipVersionKey = 'skip_version';
 
-  static const _latestReleaseUrl = 'https://api.github.com/repos/gongan520/course_helper_ios/releases/latest';
+  // 多源版本信息地址（依次尝试，优先国内可直连的 CDN）
+  // jsDelivr 国内可直连；raw.githubusercontent 作为备选
+  static const _versionUrlList = [
+    'https://cdn.jsdelivr.net/gh/gongan520/course_helper_ios@main/version.json',
+    'https://raw.githubusercontent.com/gongan520/course_helper_ios/main/version.json',
+    'https://gcore.jsdelivr.net/gh/gongan520/course_helper_ios@main/version.json',
+  ];
   static const _latestReleasePageUrl = 'https://github.com/gongan520/course_helper_ios/releases/latest';
 
   static Future<void> checkUpdate({bool ignoreSkip = false}) async {
-    try {
-      final packageInfo = await PackageInfo.fromPlatform();
-      final currentVersion = packageInfo.version;
+    final packageInfo = await PackageInfo.fromPlatform();
+    final currentVersion = packageInfo.version;
 
-      final dio = Dio();
-      dio.options.connectTimeout = const Duration(seconds: 10);
-      dio.options.receiveTimeout = const Duration(seconds: 10);
-      final response = await dio.get(_latestReleaseUrl);
-      final data = response.data;
-      final latestVersion = data['tag_name']?.toString().replaceAll('v', '') ?? '';
-      final skipVersion = StorageManager.prefs.getString(_skipVersionKey) ?? '';
+    final dio = Dio();
+    dio.options.connectTimeout = const Duration(seconds: 8);
+    dio.options.receiveTimeout = const Duration(seconds: 8);
 
-      // 从 release 资产里找 IPA 下载直链，找不到再退回页面链接
-      String downloadUrl = data['html_url'] ?? _latestReleasePageUrl;
-      final assets = data['assets'];
-      if (assets is List && assets.isNotEmpty) {
-        for (final a in assets) {
-          final name = a['name']?.toString() ?? '';
-          final url = a['browser_download_url']?.toString() ?? '';
-          if (name.toLowerCase().endsWith('.ipa') && url.isNotEmpty) {
-            downloadUrl = url;
-            break;
-          }
+    Map<String, dynamic>? data;
+    for (final url in _versionUrlList) {
+      try {
+        final response = await dio.get(url);
+        if (response.data is Map) {
+          data = (response.data as Map).cast<String, dynamic>();
+          break;
         }
+      } catch (_) {
+        // 尝试下一个源
       }
+    }
 
-      final hasNewer = (ignoreSkip || latestVersion != skipVersion) &&
-          _isNewerVersion(latestVersion, currentVersion);
-
-      if (hasNewer) {
-        _showUpdateDialog(
-          latestVersion: latestVersion,
-          releaseNotes: data['body'] ?? '暂无更新说明',
-          downloadUrl: downloadUrl,
-        );
-      } else if (ignoreSkip) {
-        // 手动检查：无新版本时给出明确反馈，避免"点了没反应"的错觉
-        _showToast('当前已是最新版本 v$currentVersion');
-      }
-    } catch (e) {
-      // 手动检查失败时也要给出反馈（自动检查则静默）
+    if (data == null) {
       if (ignoreSkip) {
         _showToast('检查更新失败，请检查网络后重试');
       }
+      return;
+    }
+
+    final latestVersion = data['version']?.toString() ?? '';
+    final skipVersion = StorageManager.prefs.getString(_skipVersionKey) ?? '';
+
+    final hasNewer = (ignoreSkip || latestVersion != skipVersion) &&
+        _isNewerVersion(latestVersion, currentVersion);
+
+    if (hasNewer) {
+      _showUpdateDialog(
+        latestVersion: latestVersion,
+        releaseNotes: data['release_notes']?.toString() ?? '暂无更新说明',
+        downloadUrl: data['ipa_url']?.toString() ?? _latestReleasePageUrl,
+      );
+    } else if (ignoreSkip) {
+      _showToast('当前已是最新版本 v$currentVersion');
     }
   }
 

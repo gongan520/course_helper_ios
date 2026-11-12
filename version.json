@@ -1,0 +1,6 @@
+{
+  "version": "1.2.6",
+  "release_notes": "1. 修复检查更新无反馈问题\n2. 更新源改为国内可直连的 CDN\n3. 前往下载直链指向 IPA 文件\n4. 每账号多时间段定时签到\n5. AI 答题每账号独立开关\n6. 修复登录键盘无法收起",
+  "ipa_url": "https://github.com/gongan520/course_helper_ios/releases/download/v1.2.6/CourseHelper_1.2.6_unsigned.ipa",
+  "page_url": "https://github.com/gongan520/course_helper_ios/releases/latest"
+}
