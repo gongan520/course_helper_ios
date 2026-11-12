@@ -27,6 +27,9 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
   late final TextEditingController _aiBaseUrlController;
   late final TextEditingController _aiModelController;
 
+  // 每个账号的 AI 答题开关状态（内存缓存，uid -> 是否启用）
+  Map<String, bool> _aiEnabledMap = {};
+
   @override
   void initState() {
     super.initState();
@@ -35,6 +38,7 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
     _aiApiKeyController = TextEditingController(text: aiConfig.apiKey);
     _aiBaseUrlController = TextEditingController(text: aiConfig.baseUrl);
     _aiModelController = TextEditingController(text: aiConfig.model);
+    _aiEnabledMap = AiAnswerService().enabledAccounts;
     _loadHistory();
   }
 
@@ -346,31 +350,33 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
                     ],
                   ),
                 ),
-                InkWell(
-                  onTap: _showAiAnswerDialog,
-                  borderRadius: BorderRadius.circular(6),
-                  child: const Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.smart_toy_outlined,
-                          size: 16,
-                          color: Color(0xFF7E57C2),
-                        ),
-                        SizedBox(width: 4),
-                        Text(
-                          'AI 答题',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Color(0xFF7E57C2),
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.smart_toy_outlined,
+                      size: 16,
+                      color: Color(0xFF7E57C2),
                     ),
-                  ),
+                    const SizedBox(width: 4),
+                    const Text(
+                      'AI 答题',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF7E57C2),
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(width: 2),
+                    Transform.scale(
+                      scale: 0.8,
+                      child: Switch(
+                        value: _aiEnabledFor(user.uid),
+                        activeThumbColor: const Color(0xFF7E57C2),
+                        onChanged: (v) => _toggleAiAnswer(user.uid, v),
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -406,30 +412,22 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
     );
   }
 
-  // ============ AI 答题说明对话框 ============
+  // ============ AI 答题账号开关 ============
 
-  void _showAiAnswerDialog() {
+  bool _aiEnabledFor(String uid) => _aiEnabledMap[uid] == true;
+
+  Future<void> _toggleAiAnswer(String uid, bool enabled) async {
+    setState(() => _aiEnabledMap[uid] = enabled);
+    await AiAnswerService().setEnabledFor(uid, enabled);
+    if (!mounted) return;
     final configured = AiAnswerService().isConfigured;
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('AI 答题'),
-        content: Text(
-          '使用 AI（DeepSeek 等）在考试/作业中自动生成答案。\n\n'
-          '使用方法：\n'
-          '1. 在自动签到设置页底部配置 AI API 密钥\n'
-          '2. 打开某个测验/练习活动\n'
-          '3. 点击答题页的"AI 答题"按钮自动生成答案'
-          '${configured ? '' : '\n\n当前未配置 API 密钥。'}',
+    if (enabled && !configured) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('尚未配置 AI API 密钥，请在本页底部「AI 答题设置」中填写'),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('知道了'),
-          ),
-        ],
-      ),
-    );
+      );
+    }
   }
 
   Widget _chip(String label, Color color) {

@@ -706,10 +706,17 @@ class _LoginPageState extends State<LoginPage> {
         foregroundColor: Colors.white,
         elevation: 0,
       ),
-      body: SingleChildScrollView(
-        child: Container(
-          padding: const EdgeInsets.all(24.0),
-          child: Form(
+      body: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () {
+          FocusScope.of(context).unfocus();
+          FocusManager.instance.primaryFocus?.unfocus();
+        },
+        child: SingleChildScrollView(
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+          child: Container(
+            padding: const EdgeInsets.all(24.0),
+            child: Form(
             key: _formKey,
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
@@ -721,6 +728,7 @@ class _LoginPageState extends State<LoginPage> {
                     controller: _usernameController,
                     keyboardType: TextInputType.number,
                     autofocus: true,
+                    textInputAction: TextInputAction.next,
                     autofillHints: [AutofillHints.username, AutofillHints.telephoneNumber],
                     decoration: InputDecoration(
                       labelText: '账号',
@@ -750,6 +758,10 @@ class _LoginPageState extends State<LoginPage> {
                       ? TextFormField(
                     controller: _passwordController,
                     obscureText: !_showPassword,
+                    textInputAction: TextInputAction.done,
+                    onFieldSubmitted: (_) {
+                      FocusScope.of(context).unfocus();
+                    },
                     autofillHints: [AutofillHints.password],
                     decoration: InputDecoration(
                       labelText: '密码',
@@ -789,6 +801,10 @@ class _LoginPageState extends State<LoginPage> {
                           controller: _captchaController,
                           focusNode: _captchaFocusNode,
                           keyboardType: TextInputType.number,
+                          textInputAction: TextInputAction.done,
+                          onFieldSubmitted: (_) {
+                            FocusScope.of(context).unfocus();
+                          },
                           autofillHints: [AutofillHints.oneTimeCode],
                           decoration: InputDecoration(
                             labelText: '验证码',
@@ -875,6 +891,7 @@ class _LoginPageState extends State<LoginPage> {
             ),
           ),
         ),
+      ),
       ),
     );
   }

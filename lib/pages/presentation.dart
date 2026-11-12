@@ -1476,6 +1476,17 @@ class _PresentationPageState extends State<PresentationPage> {
       return;
     }
 
+    // 当前账号未开启 AI 答题，直接提示并返回
+    final currentUid = AccountManager.currentUser?.uid;
+    if (currentUid != null && !AiAnswerService().isEnabledFor(currentUid)) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('当前账号未开启 AI 答题，请在自动签到设置页打开')),
+        );
+      }
+      return;
+    }
+
     setState(() => _isAiAnswering = true);
 
     try {

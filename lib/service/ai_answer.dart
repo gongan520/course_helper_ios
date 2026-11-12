@@ -53,6 +53,9 @@ class AiAnswerService {
   /// 配置在 SharedPreferences 中的存储 key。
   static const _key = 'ai_answer_config';
 
+  /// 每个账号的 AI 答题开关状态：uid -> 是否启用。
+  static const _enabledKey = 'ai_answer_enabled_accounts';
+
   /// 实时读取配置（不缓存，方便设置页改了立刻生效）。
   AiAnswerConfig get config {
     try {
@@ -74,6 +77,32 @@ class AiAnswerService {
   /// 保存配置。
   Future<void> updateConfig(AiAnswerConfig cfg) async {
     await StorageManager.prefs.setString(_key, jsonEncode(cfg.toJson()));
+  }
+
+  /// 获取所有账号的 AI 答题开关状态。
+  Map<String, bool> get enabledAccounts {
+    try {
+      final raw = StorageManager.prefs.getString(_enabledKey);
+      if (raw == null || raw.isEmpty) return {};
+      final json = jsonDecode(raw);
+      if (json is Map<String, dynamic>) {
+        return json.map((k, v) => MapEntry(k.toString(), v == true));
+      }
+      return {};
+    } catch (e) {
+      logger.e('读取 AI 答题账号开关失败: $e');
+      return {};
+    }
+  }
+
+  /// 某个账号是否启用了 AI 答题。
+  bool isEnabledFor(String uid) => enabledAccounts[uid] == true;
+
+  /// 设置某个账号的 AI 答题开关。
+  Future<void> setEnabledFor(String uid, bool enabled) async {
+    final map = enabledAccounts;
+    map[uid] = enabled;
+    await StorageManager.prefs.setString(_enabledKey, jsonEncode(map));
   }
 
   /// 是否已配置 API 密钥。
