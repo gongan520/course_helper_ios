@@ -1520,11 +1520,12 @@ class _PresentationPageState extends State<PresentationPage> {
           raw = await AiAnswerService().answer(
             question: question, type: aiType, options: null);
           if (raw != null) {
+            final answer = raw;
             final blanks = problem.blanks;
             if (blanks.isEmpty) {
-              setState(() => _answer = [raw]);
+              setState(() => _answer = [answer]);
             } else {
-              final parts = raw.split(';').map((e) => e.trim()).toList();
+              final parts = answer.split(';').map((e) => e.trim()).toList();
               setState(() {
                 _answer = List.generate(blanks.length, (i) {
                   return i < parts.length ? parts[i] : '';
@@ -1539,9 +1540,10 @@ class _PresentationPageState extends State<PresentationPage> {
           raw = await AiAnswerService().answer(
             question: question, type: aiType, options: null);
           if (raw != null) {
+            final answer = raw;
             setState(() {
-              _textAnswer = raw;
-              _shortAnswerController.text = raw;
+              _textAnswer = answer;
+              _shortAnswerController.text = answer;
             });
           }
           break;
@@ -1551,9 +1553,10 @@ class _PresentationPageState extends State<PresentationPage> {
           raw = await AiAnswerService().answer(
             question: question, type: aiType, options: null);
           if (raw != null) {
+            final answer = raw;
             setState(() {
-              _textAnswer = raw;
-              _shortAnswerController.text = raw;
+              _textAnswer = answer;
+              _shortAnswerController.text = answer;
             });
           }
           break;
