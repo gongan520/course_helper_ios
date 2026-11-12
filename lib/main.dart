@@ -19,6 +19,7 @@ import './utils/logger.dart';
 import 'push/easemob.dart';
 import 'push/notification.dart';
 import 'push/update.dart';
+import './service/auto_sign.dart';
 
 // 赞助对话框显示状态键
 const _hasSponsoredKey = 'has_sponsored';
@@ -64,6 +65,8 @@ void main() async {
   await NotificationService().initialize();
 
   await EasemobIM().initialize();
+
+  await AutoSignService().initialize();
 
   runApp(const MyApp());
 }

@@ -13,6 +13,7 @@ import '../platform.dart';
 import '../utils/logger.dart';
 import '../utils/time.dart';
 import 'notification.dart';
+import '../service/auto_sign.dart';
 
 /// 环信即时通讯
 class EasemobIM {
@@ -159,6 +160,12 @@ class EasemobIM {
       final classId = (courseInfo?['classid'] ?? '').toString();
       final courseName = (courseInfo?['coursename'] ??
           message.attributes!['em_apns_ext']['em_push_title'] ?? '').toString();
+
+      // 自动签到：收到签到类活动推送时触发后台自动签到
+      if (active.activeType == ActiveType.signIn ||
+          active.activeType == ActiveType.scheduledSignIn) {
+        AutoSignService().onActivityPushed(active, courseId, classId);
+      }
 
       await NotificationService().show(
         title: '课程活动',

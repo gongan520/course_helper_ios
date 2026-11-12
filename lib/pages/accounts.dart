@@ -12,6 +12,7 @@ import '../push/easemob.dart';
 import '../push/update.dart';
 import 'widget/avatar.dart';
 import 'login.dart';
+import 'auto_sign_settings.dart';
 
 class AccountsPage extends StatefulWidget {
   const AccountsPage({super.key});
@@ -512,6 +513,13 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
             onSelected: (String result) {
               if (result == 'about') {
                 _showAboutDialog();
+              } else if (result == 'auto_sign') {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const AutoSignSettingsPage(),
+                  ),
+                );
               }
             },
             itemBuilder: (BuildContext context) => [
@@ -554,6 +562,11 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
                     );
                   },
                 ),
+              ),
+              // 自动签到设置菜单项
+              const PopupMenuItem<String>(
+                value: 'auto_sign',
+                child: Row(children: [Text('自动签到设置')]),
               ),
               // 关于菜单项
               const PopupMenuItem<String>(
