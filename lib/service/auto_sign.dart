@@ -1,17 +1,21 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+
 import '../api/active.dart';
 import '../api/sign_in.dart';
 import '../models/active.dart';
 import '../models/course.dart';
 import '../models/user.dart';
 import '../api/course.dart';
+import '../push/notification.dart';
 import '../session/account.dart';
 import '../setting/course_setting.dart';
 import '../utils/logger.dart';
 import '../utils/storage.dart';
 import '../platform.dart';
+import 'sign_history.dart';
 
 /// 单个账号的签到模式
 enum AutoSignMode {
@@ -26,11 +30,13 @@ class AutoSignConfig {
   List<String> scheduledTimes; // 定时签到时间点，格式 "HH:mm"
   // 每个账号 uid -> 模式
   Map<String, String> accountModes; // uid -> AutoSignMode.name
+  bool notifyOnResult; // 签到成功/失败时是否弹系统通知
 
   AutoSignConfig({
     this.pollIntervalSeconds = 30,
     List<String>? scheduledTimes,
     Map<String, String>? accountModes,
+    this.notifyOnResult = true,
   })  : scheduledTimes = scheduledTimes ?? [],
         accountModes = accountModes ?? {};
 
@@ -49,6 +55,7 @@ class AutoSignConfig {
         accountModes: (map['accountModes'] as Map?)
             ?.map((k, v) => MapEntry(k.toString(), v.toString()))
             ?? {},
+        notifyOnResult: map['notifyOnResult'] ?? true,
       );
     } catch (e) {
       logger.e('加载自动签到配置失败: $e');
@@ -61,6 +68,7 @@ class AutoSignConfig {
       'pollIntervalSeconds': pollIntervalSeconds,
       'scheduledTimes': scheduledTimes,
       'accountModes': accountModes,
+      'notifyOnResult': notifyOnResult,
     }));
   }
 
@@ -87,6 +95,23 @@ class AutoSignConfig {
   }
 }
 
+/// 需要手动签到的记录（动态二维码等无法自动完成的场景）
+class PendingManualSign {
+  final String userName;
+  final String courseName;
+  final String courseId;
+  final String lessonId;
+  final DateTime time;
+
+  PendingManualSign({
+    required this.userName,
+    required this.courseName,
+    required this.courseId,
+    required this.lessonId,
+    required this.time,
+  });
+}
+
 /// 自动签到服务
 ///
 /// 功能：
@@ -110,6 +135,23 @@ class AutoSignService {
   final Set<String> _processedIds = {};
   // 正在处理的 id，防止并发重复
   final Set<String> _inProgressIds = {};
+  // 待手动签到清单：key 为 'rc|uid|lessonId'
+  final Map<String, PendingManualSign> _pendingManualSigns = {};
+  Map<String, PendingManualSign> get pendingManualSigns =>
+      Map.unmodifiable(_pendingManualSigns);
+
+  // 学习通待手动签到清单：无法自动签到的活动 id（二维码/手势/签到码）
+  final Set<String> _pendingChaoxingManualIds = {};
+  Set<String> get pendingChaoxingManualIds =>
+      Set.unmodifiable(_pendingChaoxingManualIds);
+
+  /// 学习通活动是否在待手动清单中
+  bool isChaoxingManualPending(String activeId) =>
+      _pendingChaoxingManualIds.contains(activeId);
+
+  /// 手动签到完成后，从待手动清单移除
+  void markChaoxingManuallySigned(String activeId) =>
+      _pendingChaoxingManualIds.remove(activeId);
 
   bool get isRunning => _pollTimer != null || _scheduleTimer != null;
 
@@ -240,6 +282,14 @@ class AutoSignService {
       final onLesson = await RCCourseApi.getOnLesson(userId: user.uid);
       if (onLesson == null || onLesson.isEmpty) continue;
 
+      // 课程名映射：onLesson 仅含 courseId/lessonId，通过课程列表补全课程名
+      final courses = await RCCourseApi.getCoursesList(onLesson) ?? const <Course>[];
+      final courseByLesson = <String, Course>{};
+      for (final c in courses) {
+        final lid = c.lessonId;
+        if (lid != null && lid.isNotEmpty) courseByLesson[lid] = c;
+      }
+
       for (final lesson in onLesson) {
         final lessonId = lesson['lessonId']?.toString();
         if (lessonId == null || lessonId.isEmpty) continue;
@@ -248,18 +298,161 @@ class AutoSignService {
         if (_processedIds.contains(key)) continue;
         _processedIds.add(key);
 
+        final course = courseByLesson[lessonId];
+        final courseId = course?.courseId ?? lesson['courseId']?.toString() ?? '';
+        final courseName = course?.name ??
+            (lesson['courseName'] ??
+                    lesson['name'] ??
+                    lesson['course_name'] ??
+                    lessonId)
+                .toString();
+
         // 直接签到（checkIn 内部会 joinIfNotIn 进班并返回结果）
         final result = await api.checkIn(lessonId);
         if (result == 0) {
-          logger.i('雨课堂账号 ${user.name} 自动签到成功: $lessonId');
-          _showNotification('雨课堂签到成功', '${user.name} 已签到 $lessonId');
+          logger.i('雨课堂账号 ${user.name} 自动签到成功: $courseName ($lessonId)');
+          _showNotification('雨课堂签到成功', '${user.name} 已签到 $courseName');
+          _recordSignHistory(
+            account: user.name,
+            platform: '雨课堂',
+            course: courseName,
+            signType: '普通签到',
+            result: '成功',
+          );
+          // 位置签到补全
+          await _autoRainLocationCheckIn(user, api, courseName, courseId, lessonId);
         } else if (result == 50070) {
-          // 该课堂已开启动态二维码签到，需扫码，无法自动
-          logger.w('雨课堂账号 ${user.name} 课程 $lessonId 开启动态二维码签到，需手动扫码');
+          // 动态二维码签到降级：确认状态并记入待手动清单
+          await _handleRainDynamicQrCode(user, api, courseName, courseId, lessonId);
         } else {
-          logger.w('雨课堂账号 ${user.name} 签到返回码: $result');
+          logger.w('雨课堂账号 ${user.name} 课程 $courseName 签到返回码: $result');
+          _recordSignHistory(
+            account: user.name,
+            platform: '雨课堂',
+            course: courseName,
+            signType: '普通签到',
+            result: '失败(返回码 $result)',
+          );
         }
       }
+    }
+  }
+
+  /// 动态二维码签到（50070）降级处理：尝试确认签到状态，未签则记入待手动清单
+  Future<void> _handleRainDynamicQrCode(
+    User user,
+    RCCourseApi api,
+    String courseName,
+    String courseId,
+    String lessonId,
+  ) async {
+    // 尝试确认当前签到状态
+    Map<String, dynamic>? status;
+    try {
+      status = await api.getCheckIn();
+    } catch (e) {
+      logger.w('雨课堂账号 ${user.name} 查询签到状态失败: $e');
+    }
+
+    if (status != null && status['signed'] == true) {
+      logger.i('雨课堂账号 ${user.name} 课程 $courseName 已签到（动态二维码状态确认）');
+      _showNotification('雨课堂签到成功', '${user.name} 已签到 $courseName');
+      _recordSignHistory(
+        account: user.name,
+        platform: '雨课堂',
+        course: courseName,
+        signType: '普通签到',
+        result: '成功',
+      );
+      return;
+    }
+
+    // 记录到待手动清单并通知
+    _pendingManualSigns['rc|${user.uid}|$lessonId'] = PendingManualSign(
+      userName: user.name,
+      courseName: courseName,
+      courseId: courseId,
+      lessonId: lessonId,
+      time: DateTime.now(),
+    );
+    logger.w('雨课堂账号 ${user.name} 课程 $courseName 开启动态二维码签到，需手动扫码');
+    _showNotification('雨课堂需手动签到', '${user.name} 课程 $courseName 需手动扫码');
+    _recordSignHistory(
+      account: user.name,
+      platform: '雨课堂',
+      course: courseName,
+      signType: '普通签到',
+      result: '需手动扫码',
+    );
+  }
+
+  /// 位置签到补全：checkIn 成功后若需要位置签到，用课程配置的位置自动提交
+  Future<void> _autoRainLocationCheckIn(
+    User user,
+    RCCourseApi api,
+    String courseName,
+    String courseId,
+    String lessonId,
+  ) async {
+    Map<String, dynamic>? status;
+    try {
+      status = await api.getCheckIn();
+    } catch (e) {
+      logger.w('雨课堂账号 ${user.name} 查询位置签到状态失败: $e');
+    }
+    if (status == null) return;
+    if (status['signed'] == true) return; // 已签到
+    if (status['needLocationSignIn'] != true) return; // 无需位置签到
+
+    final settings = await CourseSetting.getSettings(courseId);
+    final location = settings?.location;
+    if (location == null) {
+      logger.w('雨课堂账号 ${user.name} 课程 $courseName 需要位置签到，但未配置位置');
+      _showNotification(
+          '雨课堂需手动签到', '${user.name} 课程 $courseName 需要位置签到，请手动签到');
+      _recordSignHistory(
+        account: user.name,
+        platform: '雨课堂',
+        course: courseName,
+        signType: '位置签到',
+        result: '未配置位置',
+      );
+      return;
+    }
+    final lat = double.tryParse(location.latitude);
+    final lng = double.tryParse(location.longitude);
+    if (lat == null || lng == null) {
+      logger.w('雨课堂账号 ${user.name} 课程 $courseName 位置配置无效');
+      _recordSignHistory(
+        account: user.name,
+        platform: '雨课堂',
+        course: courseName,
+        signType: '位置签到',
+        result: '位置配置无效',
+      );
+      return;
+    }
+
+    final submit = await api.submitLocationCheckIn(lessonId, lat, lng, location.address);
+    if (submit != null && submit['code'] == 0) {
+      logger.i('雨课堂账号 ${user.name} 课程 $courseName 位置签到成功');
+      _showNotification('雨课堂签到成功', '${user.name} 已签到 $courseName（位置）');
+      _recordSignHistory(
+        account: user.name,
+        platform: '雨课堂',
+        course: courseName,
+        signType: '位置签到',
+        result: '成功',
+      );
+    } else {
+      logger.w('雨课堂账号 ${user.name} 课程 $courseName 位置签到失败: $submit');
+      _recordSignHistory(
+        account: user.name,
+        platform: '雨课堂',
+        course: courseName,
+        signType: '位置签到',
+        result: '失败',
+      );
     }
   }
 
@@ -296,7 +489,8 @@ class AutoSignService {
         if (_processedIds.contains(active.id)) continue;
         logger.i('轮询发现新签到活动: ${active.name}');
         await _autoSignChaoxingActive(
-            active, course.courseId, classId, scheduledOnly: scheduledOnly);
+            active, course.courseId, classId,
+            scheduledOnly: scheduledOnly, courseName: course.name);
       }
     }
   }
@@ -307,7 +501,10 @@ class AutoSignService {
     String courseId,
     String classId, {
     required bool scheduledOnly,
+    String? courseName,
   }) async {
+    // 已处理过（成功或已判定无法自动）则不再重复处理，避免重复签到
+    if (_processedIds.contains(active.id)) return;
     if (_inProgressIds.contains(active.id)) return;
     _inProgressIds.add(active.id);
 
@@ -338,18 +535,49 @@ class AutoSignService {
         return;
       }
 
-      // 查询各账号签到状态，跳过已签账号
+      // 查询各账号签到状态，仅对明确「未签到」(status == 0) 的账号签到，避免重复签到
       final needSign = <User>[];
       for (final user in accounts) {
         final attendInfo = await SignInApi.getAttendInfoWeb(active.id, userId: user.uid);
         final status = attendInfo?['status'];
-        if (status == null || status == 0) {
+        if (status == 0) {
+          // 明确未签到
           needSign.add(user);
+        } else if (status == null) {
+          // 状态查询失败，无法确定是否已签，跳过以免重复签到
+          logger.w('账号 ${user.name} 签到状态查询失败，跳过（避免重复签到）');
+        } else {
+          // status: 1 已签 / 2 教师代签 / 4-12 请假、缺勤、迟到、早退、过期等，均视为已处理
+          logger.i('账号 ${user.name} 已处理（status=$status），跳过');
         }
       }
 
       if (needSign.isEmpty) {
         logger.i('活动 ${active.name} 所有账号已签到，跳过');
+        _processedIds.add(active.id);
+        return;
+      }
+
+      // 二维码/手势/签到码需要现场扫码、手势密码、签到码，均无法从活动详情获取，
+      // 记入待手动签到清单，而不是静默跳过
+      if (signType == SignType.qrCode ||
+          signType == SignType.pattern ||
+          signType == SignType.code) {
+        _pendingChaoxingManualIds.add(active.id);
+        final label = _signTypeLabel(signType);
+        final courseLabel = courseName ?? active.name;
+        final names = needSign.map((u) => u.name).join('、');
+        logger.w('活动「${active.name}」为$label，无法自动签到，'
+            '已加入待手动签到清单（待签账号：$names）');
+        for (final user in needSign) {
+          _recordSignHistory(
+            account: user.name,
+            platform: '学习通',
+            course: courseLabel,
+            signType: label,
+            result: '需手动签到',
+          );
+        }
         _processedIds.add(active.id);
         return;
       }
@@ -360,14 +588,29 @@ class AutoSignService {
       final imageObjectIds = settings?.imageObjectIds ?? [];
 
       // 针对不同签到类型执行
+      final courseLabel = courseName ?? active.name;
       for (final user in needSign) {
         final result = await _signForType(
           signType, user, active, courseId, classId, location, imageObjectIds);
         if (result == 'success') {
           logger.i('账号 ${user.name} 自动签到成功: ${active.name}');
           _showNotification('自动签到成功', '${user.name} 已签到 ${active.name}');
+          _recordSignHistory(
+            account: user.name,
+            platform: '学习通',
+            course: courseLabel,
+            signType: _signTypeLabel(signType),
+            result: '成功',
+          );
         } else {
           logger.w('账号 ${user.name} 自动签到结果: $result');
+          _recordSignHistory(
+            account: user.name,
+            platform: '学习通',
+            course: courseLabel,
+            signType: _signTypeLabel(signType),
+            result: result ?? '失败',
+          );
         }
       }
 
@@ -429,9 +672,53 @@ class AutoSignService {
 
   void _showNotification(String title, String body) {
     try {
-      logger.i('[$title] $body');
+      NotificationService().show(
+        title: title,
+        body: body,
+        androidDetails: const AndroidNotificationDetails(
+          'auto_sign_channel',
+          '自动签到',
+          channelDescription: '自动签到结果通知',
+          importance: Importance.high,
+          priority: Priority.high,
+          visibility: NotificationVisibility.public,
+        ),
+      );
     } catch (e) {
       logger.e('通知失败: $e');
     }
+  }
+
+  /// 写入一条签到历史记录（异步、不阻塞签到流程）
+  void _recordSignHistory({
+    required String account,
+    required String platform,
+    required String course,
+    required String signType,
+    required String result,
+  }) {
+    unawaited(SignHistoryStore().add(SignHistoryRecord(
+      time: DateTime.now(),
+      accountName: account,
+      platform: platform,
+      target: '$course · $signType',
+      success: result == '成功',
+    )));
+  }
+}
+
+/// 签到类型的中文描述
+String _signTypeLabel(SignType type) {
+  switch (type) {
+    case SignType.normal:
+      return '普通签到';
+    case SignType.qrCode:
+      return '二维码签到';
+    case SignType.pattern:
+      return '手势签到';
+    case SignType.location:
+      return '位置签到';
+    case SignType.code:
+      return '签到码签到';
   }
 }

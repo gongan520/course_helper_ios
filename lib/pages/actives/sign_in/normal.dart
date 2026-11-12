@@ -129,7 +129,6 @@ class NormalSign implements SignStrategy {
   }
 
   static Future<void> _takeBatchPhotoDirect(SignInPageState state, ImageSource source, BuildContext context) async {
-    final BuildContext context = state.context;
     final selectedAccounts = state.selectedAccounts;
     
     if (selectedAccounts.isEmpty) return;
