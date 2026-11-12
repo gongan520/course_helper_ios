@@ -357,7 +357,7 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
                     GestureDetector(
                       onTap: () async {
                         final Uri url =
-                        Uri.parse('https://github.com/AneryCoft');
+                        Uri.parse('https://github.com/gongan520');
                         if (await canLaunchUrl(url)) {
                           await launchUrl(
                             url,
@@ -366,7 +366,7 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
                         }
                       },
                       child: Text(
-                        'AneryCoft',
+                        'gongan520',
                         style: TextStyle(color: colorScheme.primary)
                       ),
                     ),

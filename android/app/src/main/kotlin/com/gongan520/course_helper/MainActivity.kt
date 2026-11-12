@@ -1,4 +1,4 @@
-package com.anerycoft.coursehelper
+package com.gongan520.coursehelper
 
 import android.os.Bundle
 import io.flutter.embedding.android.FlutterActivity

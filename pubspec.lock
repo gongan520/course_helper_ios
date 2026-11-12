@@ -409,7 +409,7 @@ packages:
       path: "."
       ref: master
       resolved-ref: "1e0f8741fa3f07b6a03bcdc24928fffff8029521"
-      url: "https://github.com/AneryCoft/flutter_tencent_captcha.git"
+      url: "https://github.com/gongan520/flutter_tencent_captcha.git"
     source: git
     version: "0.1.2"
   flutter_test:

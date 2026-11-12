@@ -24,7 +24,7 @@ kotlin {
 }
 
 android {
-    namespace = "com.anerycoft.coursehelper"
+    namespace = "com.gongan520.coursehelper"
     // 插件子项目被根 build.gradle.kts 强制 compileSdk 37，保持一致
     compileSdk = maxOf(flutter.compileSdkVersion, 37)
     ndkVersion = flutter.ndkVersion
@@ -45,7 +45,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.anerycoft.coursehelper"
+        applicationId = "com.gongan520.coursehelper"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion

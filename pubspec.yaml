@@ -68,7 +68,7 @@ dependencies:
   # flutter_tencent_captcha: ^0.1.2
   flutter_tencent_captcha:
     git:
-      url: https://github.com/AneryCoft/flutter_tencent_captcha.git
+      url: https://github.com/gongan520/flutter_tencent_captcha.git
       ref: master
   flutter_html: ^3.0.0
   flutter_localizations:
@@ -124,7 +124,7 @@ flutter:
   # in this "flutter" section. Each entry in this list should have a
   # "family" key with the font family name, and a "fonts" key with a
   # list giving the asset and other descriptors for the font. For
-  # anerycoft:
+  # for gongan520:
   # fonts:
   #   - family: Schyler
   #     fonts:
