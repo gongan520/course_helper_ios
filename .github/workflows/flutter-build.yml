@@ -46,17 +46,38 @@ jobs:
 
       - name: Build iOS release (no codesign)
         run: |
-          # 彻底禁用代码签名，避免因 pbxproj 里 CODE_SIGN_STYLE=Automatic 触发签名报错
-          export CODE_SIGNING_ALLOWED=NO
-          export CODE_SIGNING_REQUIRED=NO
-          export CODE_SIGN_IDENTITY=""
-          flutter build ios --release --no-codesign
+          # 先跑 flutter 生成 ios 工程与 pod 依赖
+          flutter build ios --release --no-codesign || true
+          # 改用 xcodebuild 直接构建，显式禁用签名，绕开 Flutter 的签名校验
+          cd ios
+          xcodebuild \
+            -workspace Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath build/ios \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_STYLE=Manual \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            DEVELOPMENT_TEAM="" \
+            build
+          cd ..
+          APP=$(find ios/build/ios -path "*/Release-iphoneos/Runner.app" -type d | head -1)
+          echo "App path: $APP"
 
       - name: Package unsigned IPA
         run: |
           set -euo pipefail
           VERSION="${{ steps.version.outputs.APP_VERSION }}"
-          APP="build/ios/iphoneos/Runner.app"
+          # 从 xcodebuild 产物取 Runner.app
+          APP=$(find ios/build/ios -path "*/Release-iphoneos/Runner.app" -type d | head -1)
+          if [ -z "$APP" ]; then
+            APP=$(find build/ios -path "*/Release-iphoneos/Runner.app" -type d | head -1)
+          fi
+          echo "App path: $APP"
           rm -rf Payload && mkdir Payload
           cp -R "$APP" Payload/
           zip -qry "CourseHelper_${VERSION}_unsigned.ipa" Payload
