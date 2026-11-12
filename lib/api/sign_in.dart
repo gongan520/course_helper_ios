@@ -85,7 +85,7 @@ class SignInApi extends Api {
       'fid': '0',
       'name': user?.name ?? '',
       'deviceCode': _deviceCode,
-      'validate': ?validate,
+      'validate': validate ?? '',
     };
 
     final withPhoto = objectId != null;

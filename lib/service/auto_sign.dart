@@ -194,12 +194,6 @@ class AutoSignService {
   AutoSignConfig get config => _config;
 
   Timer? _pollTimer;
-  Timer? _scheduleTimer;
-
-  // 定时签到：当天已触发的时间窗口 key（uid|start|end|YYYY-MM-DD），用于一天内去重
-  final Set<String> _scheduledTriggeredKeys = {};
-  // 定时签到：临时限定本次轮询只处理这些 uid（null 表示不限制）
-  Set<String>? _scheduledOverrideUids;
 
   // 已处理过的活动/课程 id，避免重复签到
   final Set<String> _processedIds = {};
@@ -223,7 +217,7 @@ class AutoSignService {
   void markChaoxingManuallySigned(String activeId) =>
       _pendingChaoxingManualIds.remove(activeId);
 
-  bool get isRunning => _pollTimer != null || _scheduleTimer != null;
+  bool get isRunning => _pollTimer != null;
 
   /// 初始化并启动后台任务
   Future<void> initialize() async {
@@ -241,14 +235,13 @@ class AutoSignService {
 
   void _startTimers() {
     _pollTimer?.cancel();
-    _scheduleTimer?.cancel();
     _pollTimer = null;
-    _scheduleTimer = null;
 
     // 没有任何账号开启自动/定时则完全不轮询
     if (!_config.hasAnyActive) return;
 
-    // 周期轮询：托管模式检测签到（雨课堂轮询课程、学习通轮询活动）
+    // 周期轮询：托管模式 + 定时模式（时间段内）都走同一套托管轮询逻辑。
+    // 定时模式账号是否在窗口内由 _accountsForPoll 动态判断，窗口外自动跳过。
     if (_config.pollIntervalSeconds > 0) {
       _pollTimer = Timer.periodic(
         Duration(seconds: _config.pollIntervalSeconds),
@@ -257,59 +250,33 @@ class AutoSignService {
       // 启动后立即轮询一次
       Future.delayed(const Duration(seconds: 3), () => _pollSignIns());
     }
-
-    // 固定时间点检测（定时模式）
-    if (_config.scheduledAccounts.isNotEmpty) {
-      _scheduleTimer = Timer.periodic(const Duration(seconds: 20), (_) {
-        _checkScheduledTimes();
-      });
-    }
   }
 
   void dispose() {
     _pollTimer?.cancel();
-    _scheduleTimer?.cancel();
   }
 
-  /// 固定时间点检测（定时模式账号）：按每个账号的时间窗口判断是否触发签到
-  Future<void> _checkScheduledTimes() async {
-    if (_config.scheduledAccounts.isEmpty) return;
+  /// 定时模式账号：返回当前落在其任一时间段内的账号集合。
+  /// 时间段外返回空（不轮询），时间段内持续返回（持续托管轮询）。
+  Set<String> _scheduledInWindowUids() {
     final now = DateTime.now();
-    final weekday = now.weekday; // 周一=1 ... 周日=7，与 weekdays 定义一致
+    final weekday = now.weekday; // 周一=1 ... 周日=7
     final nowStr = _hhmm(now);
-    final dateStr = _dateStr(now);
+    final inWindow = <String>{};
 
-    final dueUids = <String>{};
     for (final user in _accountsFor(AutoSignMode.scheduled)) {
-      final cfg = _config.scheduledOf(user.uid);
+      final cfg = _config.scheduledAccounts[user.uid];
+      if (cfg == null) continue;
       if (!_matchesRepeat(cfg, weekday)) continue;
-
-      // 命中某个时间窗口（含跨天，如 22:00-01:00）
-      TimeRange? hit;
+      if (cfg.timeRanges.isEmpty) continue;
       for (final range in cfg.timeRanges) {
         if (_inTimeRange(nowStr, range.start, range.end)) {
-          hit = range;
+          inWindow.add(user.uid);
           break;
         }
       }
-      if (hit == null) continue;
-
-      // 当天去重：key = uid|start|end|YYYY-MM-DD，每天都能重新触发
-      final key = '${user.uid}|${hit.start}|${hit.end}|$dateStr';
-      if (_scheduledTriggeredKeys.contains(key)) continue;
-      _scheduledTriggeredKeys.add(key);
-      dueUids.add(user.uid);
     }
-
-    if (dueUids.isEmpty) return;
-
-    logger.i('命中定时签到窗口，触发账号: ${dueUids.join(', ')}');
-    _scheduledOverrideUids = dueUids;
-    try {
-      await _pollSignIns(scheduledOnly: true);
-    } finally {
-      _scheduledOverrideUids = null;
-    }
+    return inWindow;
   }
 
   /// repeatType 是否匹配当前星期几
@@ -351,12 +318,6 @@ class AutoSignService {
   String _hhmm(DateTime d) =>
       '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
 
-  String _dateStr(DateTime d) {
-    final m = d.month.toString().padLeft(2, '0');
-    final day = d.day.toString().padLeft(2, '0');
-    return '${d.year}-$m-$day';
-  }
-
   /// 收到推送活动消息时的自动签到入口（仅学习通环信推送）
   ///
   /// 由 EasemobIM 在收到签到类活动消息时调用。
@@ -394,22 +355,25 @@ class AutoSignService {
     }).toList();
   }
 
-  /// 托管模式账号（scheduledOnly=false 时）或定时模式账号（true 时）
+  /// 需要轮询签到的账号：
+  /// - 托管模式：scheduledOnly=false 时始终处理
+  /// - 定时模式：仅当其当前落在某个时间段内时处理（时间段内等同托管，持续轮询）
   List<User> _accountsForPoll({required bool scheduledOnly}) {
-    if (scheduledOnly) {
-      var accounts = _accountsFor(AutoSignMode.scheduled);
-      // 定时触发时只处理当前窗口内的指定账号
-      final override = _scheduledOverrideUids;
-      if (override != null) {
-        accounts = accounts.where((u) => override.contains(u.uid)).toList();
-      }
-      return accounts;
-    }
-    // 托管 + 定时都要处理
+    // 定时模式账号当前所在窗口
+    final inWindow = _scheduledInWindowUids();
+
     return AccountManager.allAccounts.where((u) {
       if (!u.status) return false;
       final m = _config.modeOf(u.uid);
-      return m == AutoSignMode.auto || m == AutoSignMode.scheduled;
+      if (m == AutoSignMode.auto) {
+        // 托管：scheduledOnly 时不处理
+        return !scheduledOnly;
+      }
+      if (m == AutoSignMode.scheduled) {
+        // 定时：必须落在时间段内才处理（时间段内持续轮询，等同托管）
+        return inWindow.contains(u.uid);
+      }
+      return false;
     }).toList();
   }
 
@@ -439,44 +403,56 @@ class AutoSignService {
         if (lessonId == null || lessonId.isEmpty) continue;
 
         final key = 'rc|${user.uid}|$lessonId';
+        // 已成功签到或已判定需手动，则跳过，避免重复签到
         if (_processedIds.contains(key)) continue;
-        _processedIds.add(key);
+        // 防止并发轮询对同一 lesson 重复签到
+        if (_inProgressIds.contains(key)) continue;
+        _inProgressIds.add(key);
 
-        final course = courseByLesson[lessonId];
-        final courseId = course?.courseId ?? lesson['courseId']?.toString() ?? '';
-        final courseName = course?.name ??
-            (lesson['courseName'] ??
-                    lesson['name'] ??
-                    lesson['course_name'] ??
-                    lessonId)
-                .toString();
+        try {
+          final course = courseByLesson[lessonId];
+          final courseId = course?.courseId ?? lesson['courseId']?.toString() ?? '';
+          final courseName = course?.name ??
+              (lesson['courseName'] ??
+                      lesson['name'] ??
+                      lesson['course_name'] ??
+                      lessonId)
+                  .toString();
 
-        // 直接签到（checkIn 内部会 joinIfNotIn 进班并返回结果）
-        final result = await api.checkIn(lessonId);
-        if (result == 0) {
-          logger.i('雨课堂账号 ${user.name} 自动签到成功: $courseName ($lessonId)');
-          _showNotification('雨课堂签到成功', '${user.name} 已签到 $courseName');
-          _recordSignHistory(
-            account: user.name,
-            platform: '雨课堂',
-            course: courseName,
-            signType: '普通签到',
-            result: '成功',
-          );
-          // 位置签到补全
-          await _autoRainLocationCheckIn(user, api, courseName, courseId, lessonId);
-        } else if (result == 50070) {
-          // 动态二维码签到降级：确认状态并记入待手动清单
-          await _handleRainDynamicQrCode(user, api, courseName, courseId, lessonId);
-        } else {
-          logger.w('雨课堂账号 ${user.name} 课程 $courseName 签到返回码: $result');
-          _recordSignHistory(
-            account: user.name,
-            platform: '雨课堂',
-            course: courseName,
-            signType: '普通签到',
-            result: '失败(返回码 $result)',
-          );
+          // 直接签到（checkIn 内部会 joinIfNotIn 进班并返回结果）
+          final result = await api.checkIn(lessonId);
+          if (result == 0) {
+            logger.i('雨课堂账号 ${user.name} 自动签到成功: $courseName ($lessonId)');
+            _showNotification('雨课堂签到成功', '${user.name} 已签到 $courseName');
+            _recordSignHistory(
+              account: user.name,
+              platform: '雨课堂',
+              course: courseName,
+              signType: '普通签到',
+              result: '成功',
+            );
+            // 签到成功后才标记已处理，避免下一轮重复签到
+            _processedIds.add(key);
+            // 位置签到补全
+            await _autoRainLocationCheckIn(user, api, courseName, courseId, lessonId);
+          } else if (result == 50070) {
+            // 动态二维码签到降级：确认状态并记入待手动清单（终态，标记已处理）
+            await _handleRainDynamicQrCode(user, api, courseName, courseId, lessonId);
+            _processedIds.add(key);
+          } else {
+            // 失败（如签到尚未开始）：不标记已处理，下一轮继续重试，
+            // 保证老师中途发起的签到能被后续轮询捕获
+            logger.w('雨课堂账号 ${user.name} 课程 $courseName 签到返回码: $result');
+            _recordSignHistory(
+              account: user.name,
+              platform: '雨课堂',
+              course: courseName,
+              signType: '普通签到',
+              result: '失败(返回码 $result)',
+            );
+          }
+        } finally {
+          _inProgressIds.remove(key);
         }
       }
     }

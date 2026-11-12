@@ -89,10 +89,51 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
         TimeRange(start: _formatTimeOfDay(start), end: _formatTimeOfDay(end)),
       );
     });
+    _maybeHintCrossDay(start, end);
+  }
+
+  Future<void> _editTimeRange(String uid, TimeRange range) async {
+    final start = await showTimePicker(
+      context: context,
+      initialTime: _parseTimeOfDay(range.start),
+      helpText: '修改开始时间',
+    );
+    if (start == null || !mounted) return;
+    final end = await showTimePicker(
+      context: context,
+      initialTime: _parseTimeOfDay(range.end),
+      helpText: '修改结束时间',
+    );
+    if (end == null || !mounted) return;
+
+    setState(() {
+      range.start = _formatTimeOfDay(start);
+      range.end = _formatTimeOfDay(end);
+    });
+    _maybeHintCrossDay(start, end);
+  }
+
+  /// 结束时间早于开始时间即视为跨天时间段，给出提示
+  void _maybeHintCrossDay(TimeOfDay start, TimeOfDay end) {
+    final startM = start.hour * 60 + start.minute;
+    final endM = end.hour * 60 + end.minute;
+    if (startM <= endM) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('已设置跨天时间段（如 22:00-01:00），将覆盖次日凌晨'),
+      ),
+    );
   }
 
   String _formatTimeOfDay(TimeOfDay t) =>
       '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+
+  TimeOfDay _parseTimeOfDay(String hm) {
+    final parts = hm.split(':');
+    final h = int.tryParse(parts.isNotEmpty ? parts[0] : '') ?? 0;
+    final m = int.tryParse(parts.length > 1 ? parts[1] : '') ?? 0;
+    return TimeOfDay(hour: h, minute: m);
+  }
 
   void _onModeTap(String uid, AutoSignMode mode) {
     setState(() {
@@ -447,11 +488,12 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
           ),
           const SizedBox(height: 6),
           Text(
-            '这个账号的上课时间段（24 小时制）。时间段内会像托管一样持续盯课，有签到就自动签。',
+            '可添加多个时间段，时间段内会像托管一样持续盯课，有签到就自动签。\n'
+            '开始时间晚于结束时间即视为跨天（如 22:00-01:00）。',
             style: TextStyle(fontSize: 12, color: scheme.outline, height: 1.5),
           ),
           const SizedBox(height: 10),
-          _buildTimeRangeList(cfg),
+          _buildTimeRangeList(uid, cfg),
           const SizedBox(height: 10),
           Align(
             alignment: Alignment.centerLeft,
@@ -469,7 +511,7 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
     );
   }
 
-  Widget _buildTimeRangeList(ScheduledAccountConfig cfg) {
+  Widget _buildTimeRangeList(String uid, ScheduledAccountConfig cfg) {
     final scheme = Theme.of(context).colorScheme;
     const accent = Color(0xFF7E57C2);
 
@@ -490,9 +532,27 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
                 const Icon(Icons.access_time, size: 16, color: accent),
                 const SizedBox(width: 6),
                 Expanded(
-                  child: Text(
-                    '${range.start} → ${range.end}',
-                    style: const TextStyle(fontSize: 13),
+                  child: InkWell(
+                    onTap: () => _editTimeRange(uid, range),
+                    borderRadius: BorderRadius.circular(6),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              '${range.start} → ${range.end}',
+                              style: const TextStyle(fontSize: 13),
+                            ),
+                          ),
+                          Icon(
+                            Icons.edit_outlined,
+                            size: 15,
+                            color: scheme.outline,
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
                 InkWell(
@@ -838,7 +898,7 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
             child: Text(
               '为每个账号单独选择签到模式：\n'
               '• 托管：检测到签到活动/正在上课时自动签到\n'
-              '• 定时：仅在设定的时间段内自动签到\n'
+              '• 定时：在设定的时间段内像托管一样持续盯课自动签到，可添加多个时间段\n'
               '• 手动：不自动，保持原样手动签到',
               style: TextStyle(fontSize: 13, height: 1.6, color: scheme.outline),
             ),
