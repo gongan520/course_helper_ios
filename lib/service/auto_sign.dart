@@ -20,6 +20,7 @@ class AutoSignConfig {
   List<String> scheduledTimes; // 定时签到时间点，格式 "HH:mm"
   int pollIntervalSeconds; // 定时轮询间隔（秒）
   bool signAllAccounts; // 是否对所有已登录账号签到
+  List<String> selectedAccountIds; // 选中的账号 uid 列表（signAllAccounts=false 时生效）
 
   AutoSignConfig({
     this.enabled = false,
@@ -27,7 +28,9 @@ class AutoSignConfig {
     List<String>? scheduledTimes,
     this.pollIntervalSeconds = 30,
     this.signAllAccounts = true,
-  }) : scheduledTimes = scheduledTimes ?? [];
+    List<String>? selectedAccountIds,
+  })  : scheduledTimes = scheduledTimes ?? [],
+        selectedAccountIds = selectedAccountIds ?? [];
 
   static const _key = 'auto_sign_config';
 
@@ -44,6 +47,9 @@ class AutoSignConfig {
             .toList() ?? [],
         pollIntervalSeconds: map['pollIntervalSeconds'] ?? 30,
         signAllAccounts: map['signAllAccounts'] ?? true,
+        selectedAccountIds: (map['selectedAccountIds'] as List?)
+            ?.map((e) => e.toString())
+            .toList() ?? [],
       );
     } catch (e) {
       logger.e('加载自动签到配置失败: $e');
@@ -58,7 +64,17 @@ class AutoSignConfig {
       'scheduledTimes': scheduledTimes,
       'pollIntervalSeconds': pollIntervalSeconds,
       'signAllAccounts': signAllAccounts,
+      'selectedAccountIds': selectedAccountIds,
     }));
+  }
+
+  /// 根据配置筛选出需要签到的账号列表
+  ///
+  /// 返回已登录且状态正常的账号中，符合当前选择配置的那部分。
+  List<User> resolveAccounts() {
+    final active = AccountManager.allAccounts.where((u) => u.status).toList();
+    if (signAllAccounts) return active;
+    return active.where((u) => selectedAccountIds.contains(u.uid)).toList();
   }
 }
 
@@ -229,10 +245,13 @@ class AutoSignService {
         }
       }
 
-      // 获取需要签到的账号
-      final accounts = _config.signAllAccounts
-          ? AccountManager.allAccounts.where((u) => u.status).toList()
-          : [AccountManager.currentUser!];
+      // 获取需要签到的账号（按配置筛选）
+      final accounts = _config.resolveAccounts();
+      if (accounts.isEmpty) {
+        logger.w('没有符合自动签到配置的账号，跳过');
+        _processedActiveIds.add(active.id);
+        return;
+      }
 
       // 查询各账号签到状态，跳过已签账号
       final needSign = <User>[];

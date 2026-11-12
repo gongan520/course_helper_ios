@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../service/auto_sign.dart';
+import '../session/account.dart';
 
 /// 自动签到 / 定时签到设置页
 class AutoSignSettingsPage extends StatefulWidget {
@@ -46,6 +47,56 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
     }
   }
 
+  /// 构建账号勾选列表
+  Widget _buildAccountSelector() {
+    final accounts = AccountManager.allAccounts;
+    if (accounts.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: const Text(
+          '暂无已登录账号，请先在账号页登录。',
+          style: TextStyle(fontSize: 13),
+        ),
+      );
+    }
+
+    // 确保新登录的账号默认也被选中（首次进入时若列表为空则全选）
+    if (_config.selectedAccountIds.isEmpty) {
+      _config.selectedAccountIds.addAll(
+        accounts.map((u) => u.uid),
+      );
+    }
+
+    return Column(
+      children: [
+        for (final user in accounts)
+          CheckboxListTile(
+            dense: true,
+            controlAffinity: ListTileControlAffinity.leading,
+            title: Text(user.name),
+            subtitle: Text('账号: ${user.phone}'),
+            secondary: const Icon(Icons.person_outline),
+            value: _config.selectedAccountIds.contains(user.uid),
+            onChanged: _config.enabled
+                ? (checked) => setState(() {
+                    if (checked == true) {
+                      if (!_config.selectedAccountIds.contains(user.uid)) {
+                        _config.selectedAccountIds.add(user.uid);
+                      }
+                    } else {
+                      _config.selectedAccountIds.remove(user.uid);
+                    }
+                  })
+                : null,
+          ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -68,12 +119,27 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
           // 所有账号签到
           SwitchListTile(
             title: const Text('为所有账号签到'),
-            subtitle: const Text('开启后对所有已登录账号签到，关闭则仅当前账号'),
+            subtitle: const Text('开启后对所有已登录账号签到，关闭则仅对下方勾选的账号签到'),
             value: _config.signAllAccounts,
             onChanged: _config.enabled
                 ? (v) => setState(() => _config.signAllAccounts = v)
                 : null,
           ),
+
+          // 按账号选择（未开启"所有账号"时显示）
+          if (!_config.signAllAccounts) ...[
+            Padding(
+              padding: const EdgeInsets.only(top: 4, bottom: 4),
+              child: Text(
+                '选择自动签到的账号',
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.outline,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+            _buildAccountSelector(),
+          ],
 
           const Divider(),
 
