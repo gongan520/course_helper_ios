@@ -1,6 +1,6 @@
 {
-  "version": "1.2.8",
-  "release_notes": "1. 修复托管不生效：模式切换立即生效，无需再点保存\n2. 修复雨课堂多账号 Cookie 串号导致不签到\n3. 修复学习通多账号托管只签当前账号\n4. 更新源改为国内可直连 CDN",
-  "ipa_url": "https://github.com/gongan520/course_helper_ios/releases/download/v1.2.8/CourseHelper_1.2.8_unsigned.ipa",
+  "version": "1.2.9",
+  "release_notes": "1. 修复检查更新源被墙导致更新不了（改用 fastly/b-cdn 国内直连节点）\n2. 下载 IPA 走国内加速直链\n3. 托管修复：模式切换立即生效\n4. 雨课堂/学习通多账号托管修复",
+  "ipa_url": "https://github.com/gongan520/course_helper_ios/releases/download/v1.2.9/CourseHelper_1.2.9_unsigned.ipa",
   "page_url": "https://github.com/gongan520/course_helper_ios/releases/latest"
 }
