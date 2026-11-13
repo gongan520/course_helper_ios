@@ -5,9 +5,9 @@ class ActiveApi extends Api {
   ActiveApi([super.user]);
 
   /// 获取活动详细（Web）
-  static Future<Map<String, dynamic>?> getActiveInfoWeb(String activeId) async {
+  static Future<Map<String, dynamic>?> getActiveInfoWeb(String activeId, {String? userId}) async {
     final url = 'https://mobilelearn.chaoxing.com/v2/apis/active/getPPTActiveInfo?activeId=$activeId';
-    final response = await ApiService.sendRequest(url);
+    final response = await ApiService.sendRequest(url, userId: userId);
     
     if (response == null || response.data['result'] != 1) {
       return null;
@@ -17,9 +17,9 @@ class ActiveApi extends Api {
   }
 
   /// 获取活动详细
-  static Future<Map<String, dynamic>?> getActiveInfo(String activeId) async {
+  static Future<Map<String, dynamic>?> getActiveInfo(String activeId, {String? userId}) async {
     final url = 'https://mobilelearn.chaoxing.com/widget/active/getActiveInfo?id=$activeId';
-    final response = await ApiService.sendRequest(url);
+    final response = await ApiService.sendRequest(url, userId: userId);
     return response?.data;
   }
 }

@@ -8,16 +8,16 @@ class CXCourseApi extends Api {
   CXCourseApi([super.user]);
 
   /// 获取课程列表
-  static Future<Map<String, dynamic>?> getCourses() async {
+  static Future<Map<String, dynamic>?> getCourses({String? userId}) async {
     final url = 'https://mooc1-api.chaoxing.com/mycourse/backclazzdata?view=json&getTchClazzType=1&mcode=';
     
-    final response = await ApiService.sendRequest(url);
+    final response = await ApiService.sendRequest(url, userId: userId);
     return response?.data;
   }
 
   /// 获取处理后的课程列表
-  static Future<List<Course>?> getCoursesList() async {
-    final coursesData = await getCourses();
+  static Future<List<Course>?> getCoursesList({String? userId}) async {
+    final coursesData = await getCourses(userId: userId);
     
     if (coursesData == null || coursesData['result'] != 1) {
       return null;
@@ -47,7 +47,7 @@ class CXCourseApi extends Api {
       'fields': 'clazzid,popupagreement,personid,clazzname,createtime'
     };
 
-    final response = await ApiService.sendRequest(url, params: params);
+    final response = await ApiService.sendRequest(url, params: params, userId: user?.uid);
     if (response == null) return null;
 
     return response.data['data'][0]['createtime'];
@@ -66,12 +66,12 @@ class CXCourseApi extends Api {
     };
     params.addAll(EncryptionUtil.getEncParams(params));
 
-    final response = await ApiService.sendRequest(url, method: 'GET', params: params);
+    final response = await ApiService.sendRequest(url, method: 'GET', params: params, userId: user?.uid);
     return response?.data;
   }
 
   /// 获取任务活动列表（Web）
-  static Future<Map<String, dynamic>?> getTaskActivityListWeb(String courseId, String classId) async {
+  static Future<Map<String, dynamic>?> getTaskActivityListWeb(String courseId, String classId, {String? userId}) async {
     final url = 'https://mobilelearn.chaoxing.com/v2/apis/active/student/activelist';
 
     final timeStampMS = DateTime.now().millisecondsSinceEpoch.toString();
@@ -83,7 +83,7 @@ class CXCourseApi extends Api {
       '_': timeStampMS
     };
 
-    final response = await ApiService.sendRequest(url, method: 'GET', params: params);
+    final response = await ApiService.sendRequest(url, method: 'GET', params: params, userId: userId);
     return response?.data;
   }
 
@@ -93,7 +93,7 @@ class CXCourseApi extends Api {
       
     final results = await Future.wait([
       getTaskActivityList(courseId, classId, cpi, joinClassTime),
-      getTaskActivityListWeb(courseId, classId),
+      getTaskActivityListWeb(courseId, classId, userId: user?.uid),
     ]);
       
     final taskData = results[0];
@@ -157,9 +157,9 @@ class RCCourseApi extends Api {
     _tokens[user!.uid] = [bearerToken, lessonToken];
   }
 
-  static Future<Map<String, dynamic>?> getCourses() async {
+  static Future<Map<String, dynamic>?> getCourses({String? userId}) async {
     final url = '/v/course_meta/learning_list/';
-    final response = await ApiService.sendRequest(url);
+    final response = await ApiService.sendRequest(url, userId: userId);
     return response?.data;
   }
 
@@ -175,20 +175,21 @@ class RCCourseApi extends Api {
   }
 
   /// 获取处理后的课程列表
-  static Future<List<Course>?> getCoursesList([List<dynamic>? onLessonCourses]) async {
+  static Future<List<Course>?> getCoursesList([List<dynamic>? onLessonCourses, String? userId]) async {
     late Map<String, dynamic>? courses;
     if (onLessonCourses == null) {
-      final results = await Future.wait([getCourses(), getOnLesson()]);
+      final results = await Future.wait([getCourses(userId: userId), getOnLesson(userId: userId)]);
       courses = results[0] as Map<String, dynamic>?;
       onLessonCourses = results[1] as List<dynamic>?;
     } else {
-      courses = await getCourses();
+      courses = await getCourses(userId: userId);
     }
 
     if (courses == null || onLessonCourses == null) {
       return null;
     }
-    if (courses['data'].isEmpty || courses['data'].isEmpty) {
+    final data = courses['data'];
+    if (data == null || data.isEmpty || onLessonCourses.isEmpty) {
       return null;
     }
 

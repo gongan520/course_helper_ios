@@ -94,6 +94,7 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
       );
     });
     _maybeHintCrossDay(start, end);
+    AutoSignService().updateConfig(_config);
   }
 
   Future<void> _editTimeRange(String uid, TimeRange range) async {
@@ -115,6 +116,7 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
       range.end = _formatTimeOfDay(end);
     });
     _maybeHintCrossDay(start, end);
+    AutoSignService().updateConfig(_config);
   }
 
   /// 结束时间早于开始时间即视为跨天时间段，给出提示
@@ -140,6 +142,7 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
   }
 
   void _onModeTap(String uid, AutoSignMode mode) {
+    var changed = false;
     setState(() {
       final current = _config.modeOf(uid);
       if (mode == AutoSignMode.scheduled) {
@@ -153,12 +156,20 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
         } else {
           _config.setMode(uid, mode);
           _expandedUids.add(uid);
+          changed = true;
         }
       } else {
-        _config.setMode(uid, mode);
+        if (current != mode) {
+          _config.setMode(uid, mode);
+          changed = true;
+        }
         _expandedUids.remove(uid);
       }
     });
+    // 模式切换后立即持久化并重启定时器，避免「不点保存就不生效」
+    if (changed) {
+      AutoSignService().updateConfig(_config);
+    }
   }
 
   // ============ 模式相关工具 ============
@@ -554,7 +565,10 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
                   ),
                 ),
                 InkWell(
-                  onTap: () => setState(() => cfg.timeRanges.remove(range)),
+                  onTap: () {
+                    setState(() => cfg.timeRanges.remove(range));
+                    AutoSignService().updateConfig(_config);
+                  },
                   borderRadius: BorderRadius.circular(6),
                   child: Padding(
                     padding: const EdgeInsets.all(4),
@@ -605,7 +619,10 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
                       ? FontWeight.w600
                       : FontWeight.normal,
                 ),
-                onSelected: (_) => setState(() => cfg.repeatType = opt.$1),
+                onSelected: (_) {
+                  setState(() => cfg.repeatType = opt.$1);
+                  AutoSignService().updateConfig(_config);
+                },
               ),
           ],
         ),
@@ -631,13 +648,16 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
                         ? accent
                         : scheme.onSurfaceVariant,
                   ),
-                  onSelected: (selected) => setState(() {
-                    if (selected) {
-                      if (!cfg.weekdays.contains(d)) cfg.weekdays.add(d);
-                    } else {
-                      cfg.weekdays.remove(d);
-                    }
-                  }),
+                  onSelected: (selected) {
+                    setState(() {
+                      if (selected) {
+                        if (!cfg.weekdays.contains(d)) cfg.weekdays.add(d);
+                      } else {
+                        cfg.weekdays.remove(d);
+                      }
+                    });
+                    AutoSignService().updateConfig(_config);
+                  },
                 ),
             ],
           ),
@@ -670,7 +690,10 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
             title: const Text('签到结果通知'),
             subtitle: const Text('签到成功或失败时弹出系统通知'),
             value: _config.notifyOnResult,
-            onChanged: (v) => setState(() => _config.notifyOnResult = v),
+            onChanged: (v) {
+              setState(() => _config.notifyOnResult = v);
+              AutoSignService().updateConfig(_config);
+            },
           ),
           const Divider(height: 1),
           ListTile(
@@ -684,9 +707,12 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
                 DropdownMenuItem(value: 60, child: Text('1 分钟')),
                 DropdownMenuItem(value: 120, child: Text('2 分钟')),
               ],
-              onChanged: (v) => setState(
-                () => _config.pollIntervalSeconds = v ?? 30,
-              ),
+              onChanged: (v) {
+                setState(
+                  () => _config.pollIntervalSeconds = v ?? 30,
+                );
+                AutoSignService().updateConfig(_config);
+              },
             ),
           ),
         ],

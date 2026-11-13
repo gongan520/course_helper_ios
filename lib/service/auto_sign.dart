@@ -391,7 +391,7 @@ class AutoSignService {
       if (onLesson == null || onLesson.isEmpty) continue;
 
       // 课程名映射：onLesson 仅含 courseId/lessonId，通过课程列表补全课程名
-      final courses = await RCCourseApi.getCoursesList(onLesson) ?? const <Course>[];
+      final courses = await RCCourseApi.getCoursesList(onLesson, user.uid) ?? const <Course>[];
       final courseByLesson = <String, Course>{};
       for (final c in courses) {
         final lid = c.lessonId;
@@ -582,35 +582,35 @@ class AutoSignService {
   Future<void> _pollChaoxing({required bool scheduledOnly}) async {
     if (!AccountManager.hasActiveSession()) return;
 
-    final courseList = await CXCourseApi.getCoursesList();
-    if (courseList == null || courseList.isEmpty) return;
-
     final accounts = _accountsForPoll(scheduledOnly: scheduledOnly);
     if (accounts.isEmpty) return;
 
-    final currentUser = AccountManager.currentUser;
-    if (currentUser == null) return;
+    // 按账号遍历：每个托管账号各自拉取课程与活动，避免只签当前会话账号
+    for (final user in accounts) {
+      final courseList = await CXCourseApi.getCoursesList(userId: user.uid);
+      if (courseList == null || courseList.isEmpty) continue;
 
-    final api = CXCourseApi(currentUser);
-    for (final course in courseList) {
-      final classId = course.classId;
-      final cpi = course.cpi;
-      if (classId.isEmpty || cpi == null || cpi.isEmpty) continue;
+      final api = CXCourseApi(user);
+      for (final course in courseList) {
+        final classId = course.classId;
+        final cpi = course.cpi;
+        if (classId.isEmpty || cpi == null || cpi.isEmpty) continue;
 
-      final activeList = await api.getActiveList(course.courseId, classId, cpi);
-      if (activeList == null) continue;
+        final activeList = await api.getActiveList(course.courseId, classId, cpi);
+        if (activeList == null) continue;
 
-      for (final active in activeList) {
-        if (active.activeType != ActiveType.signIn &&
-            active.activeType != ActiveType.scheduledSignIn) {
-          continue;
+        for (final active in activeList) {
+          if (active.activeType != ActiveType.signIn &&
+              active.activeType != ActiveType.scheduledSignIn) {
+            continue;
+          }
+          if (!active.status) continue;
+          if (_processedIds.contains(active.id)) continue;
+          logger.i('轮询发现新签到活动: ${active.name} (账号 ${user.name})');
+          await _autoSignChaoxingActive(
+              active, course.courseId, classId,
+              scheduledOnly: scheduledOnly, courseName: course.name);
         }
-        if (!active.status) continue;
-        if (_processedIds.contains(active.id)) continue;
-        logger.i('轮询发现新签到活动: ${active.name}');
-        await _autoSignChaoxingActive(
-            active, course.courseId, classId,
-            scheduledOnly: scheduledOnly, courseName: course.name);
       }
     }
   }
