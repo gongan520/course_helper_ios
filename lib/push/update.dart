@@ -9,12 +9,12 @@ import '../utils/storage.dart';
 class Update {
   static const _skipVersionKey = 'skip_version';
 
-  // 多源版本信息地址（依次尝试，优先国内可直连的 CDN）
-  // jsDelivr 国内可直连；raw.githubusercontent 作为备选
+  // 多源版本信息地址（依次尝试，全部国内可直连且实时）
+  // fastly.jsdelivr.net 与 jsdelivr.b-cdn.net 均为 jsDelivr 国内直连节点，无顽固缓存
   static const _versionUrlList = [
-    'https://cdn.jsdelivr.net/gh/gongan520/course_helper_ios@main/version.json',
-    'https://raw.githubusercontent.com/gongan520/course_helper_ios/main/version.json',
-    'https://gcore.jsdelivr.net/gh/gongan520/course_helper_ios@main/version.json',
+    'https://fastly.jsdelivr.net/gh/gongan520/course_helper_ios@main/version.json',
+    'https://jsdelivr.b-cdn.net/gh/gongan520/course_helper_ios@main/version.json',
+    'https://gh-proxy.com/https://raw.githubusercontent.com/gongan520/course_helper_ios/main/version.json',
   ];
   static const _latestReleasePageUrl = 'https://github.com/gongan520/course_helper_ios/releases/latest';
 
@@ -92,6 +92,28 @@ class Update {
     }
   }
 
+  // 下载 IPA：github.com 直链国内慢，自动加国内加速前缀，失败则回退原直链
+  static Future<void> _launchDownload(String downloadUrl) async {
+    final urls = <String>[downloadUrl];
+    if (downloadUrl.contains('github.com')) {
+      urls.insert(
+        0,
+        'https://gh-proxy.com/$downloadUrl',
+      );
+    }
+    for (final u in urls) {
+      final uri = Uri.parse(u);
+      try {
+        if (await canLaunchUrl(uri)) {
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+          return;
+        }
+      } catch (_) {
+        // 尝试下一个
+      }
+    }
+  }
+
   static void _showUpdateDialog({
     required String latestVersion,
     required String releaseNotes,
@@ -138,10 +160,7 @@ class Update {
               FilledButton(
                 onPressed: () async {
                   Navigator.pop(context);
-                  final uri = Uri.parse(downloadUrl);
-                  if (await canLaunchUrl(uri)) {
-                    await launchUrl(uri, mode: LaunchMode.externalApplication);
-                  }
+                  await _launchDownload(downloadUrl);
                 },
                 child: const Text('前往下载'),
               ),
