@@ -19,6 +19,7 @@ import 'push/easemob.dart';
 import 'push/notification.dart';
 import 'push/update.dart';
 import './service/auto_sign.dart';
+import './service/background_keepalive.dart';
 
 const _baiduMapIosAk = 'ctB8LatQK24AeNLvBo2upeKtmTsYthdQ';
 
@@ -63,6 +64,9 @@ void main() async {
   await EasemobIM().initialize();
 
   await AutoSignService().initialize();
+
+  // 启动后台定位保活（仅 iOS 生效，保证签到轮询与 WebSocket 后台不冻结）
+  await BackgroundKeepAlive().start();
 
   runApp(const MyApp());
 }

@@ -78,6 +78,10 @@ class _PresentationPageState extends State<PresentationPage> {
   // AI 答题相关
   bool _isAiAnswering = false;
   final TextEditingController _shortAnswerController = TextEditingController();
+  // 已自动答题的题目 ID，防止同一题重复自动提交
+  final Set<String> _autoAnsweredProblemIds = {};
+  // 是否处于全自动模式（自动答题+自动提交时静默，不弹结果对话框）
+  bool _isAutoMode = false;
   
   // 图片选择相关
   final List<XFile> _selectedImages = [];
@@ -374,6 +378,9 @@ class _PresentationPageState extends State<PresentationPage> {
                 }
               });
               _startCountdown(limit);
+
+              // 全自动答题：题目解锁后自动触发 AI 答题并自动提交
+              _tryAutoAnswer(problemId?.toString());
             }
           }
           break;
@@ -1455,11 +1462,51 @@ class _PresentationPageState extends State<PresentationPage> {
     }
   }
 
+  /// 全自动答题触发：题目解锁后调用。
+  ///
+  /// 先静默检查是否开启了 AI 答题（未开启则什么都不做），
+  /// 然后等待题目内容加载完成（_currentProblem 有值），
+  /// 再自动执行 AI 答题 + 自动提交。
+  void _tryAutoAnswer(String? problemId) {
+    // 静默检查：未配置 / 当前账号未开启 AI 答题，则直接返回，不打扰用户
+    if (!AiAnswerService().isConfigured) return;
+    final currentUid = AccountManager.currentUser?.uid;
+    if (currentUid != null && !AiAnswerService().isEnabledFor(currentUid)) return;
+
+    // 防止重复触发（同一题只自动答一次）
+    if (problemId != null) {
+      if (_autoAnsweredProblemIds.contains(problemId)) return;
+      _autoAnsweredProblemIds.add(problemId);
+    }
+    if (_isAiAnswering) return;
+
+    // 最多等待题目加载 5 秒（每 300ms 检查一次）
+    int retries = 0;
+    const maxRetries = 16;
+
+    Future<void> waitAndAnswer() async {
+      if (_currentProblem != null) {
+        // 题目已就绪，进入全自动模式（静默），自动答题 + 自动提交
+        _isAutoMode = true;
+        await _aiAnswer(autoSubmit: true, silent: true);
+        return;
+      }
+      retries++;
+      if (retries >= maxRetries || !mounted) return;
+      Future.delayed(const Duration(milliseconds: 300), waitAndAnswer);
+    }
+
+    waitAndAnswer();
+  }
+
   /// AI 答题：调用 AI 生成当前题目的答案并自动填入。
-  Future<void> _aiAnswer() async {
+  ///
+  /// [autoSubmit] 为 true 时，答完自动提交（全自动模式）。
+  /// [silent] 为 true 时，未开启/未配置等情况静默返回（用于自动触发，不打扰用户）。
+  Future<void> _aiAnswer({bool autoSubmit = false, bool silent = false}) async {
     final problem = _currentProblem;
     if (problem == null) {
-      if (mounted) {
+      if (!silent && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('当前没有题目')),
         );
@@ -1468,7 +1515,7 @@ class _PresentationPageState extends State<PresentationPage> {
     }
 
     if (!AiAnswerService().isConfigured) {
-      if (mounted) {
+      if (!silent && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('请先在自动签到设置页配置 AI API 密钥')),
         );
@@ -1479,7 +1526,7 @@ class _PresentationPageState extends State<PresentationPage> {
     // 当前账号未开启 AI 答题，直接提示并返回
     final currentUid = AccountManager.currentUser?.uid;
     if (currentUid != null && !AiAnswerService().isEnabledFor(currentUid)) {
-      if (mounted) {
+      if (!silent && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('当前账号未开启 AI 答题，请在自动签到设置页打开')),
         );
@@ -1573,7 +1620,7 @@ class _PresentationPageState extends State<PresentationPage> {
           break;
       }
 
-      if (mounted) {
+      if (mounted && !silent) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(raw != null ? 'AI 答题完成，请检查答案后提交' : 'AI 生成失败，请重试'),
@@ -1582,7 +1629,7 @@ class _PresentationPageState extends State<PresentationPage> {
       }
     } catch (e) {
       logger.e('AI 答题异常: $e');
-      if (mounted) {
+      if (mounted && !silent) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('AI 答题失败，请重试')),
         );
@@ -1591,6 +1638,16 @@ class _PresentationPageState extends State<PresentationPage> {
       if (mounted) {
         setState(() => _isAiAnswering = false);
       }
+    }
+
+    // 全自动模式：AI 答完后自动提交
+    if (autoSubmit && mounted) {
+      // 稍等一帧，确保 setState 后答案已就绪
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && (_answer != null || _textAnswer != null)) {
+          _submitAnswer();
+        }
+      });
     }
   }
 
@@ -1716,6 +1773,13 @@ class _PresentationPageState extends State<PresentationPage> {
     String message = '答案提交完成！\n成功：$successCount/$totalCount';
     if (failedAccounts.isNotEmpty) {
       message += '\n\n失败账号:\n${failedAccounts.join('\n')}';
+    }
+
+    // 全自动模式下静默提交，不弹结果对话框，只记录日志
+    if (_isAutoMode) {
+      _isAutoMode = false;
+      logger.i('全自动答题提交完成: $successCount/$totalCount${failedAccounts.isNotEmpty ? "，失败: ${failedAccounts.join(', ')}" : ""}');
+      return;
     }
 
     showDialog(
