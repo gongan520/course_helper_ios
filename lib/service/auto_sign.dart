@@ -423,7 +423,7 @@ class AutoSignService {
           final result = await api.checkIn(lessonId);
           if (result == 0) {
             logger.i('雨课堂账号 ${user.name} 自动签到成功: $courseName ($lessonId)');
-            _showNotification('雨课堂签到成功', '${user.name} 已签到 $courseName');
+            _showNotification('雨课堂签到成功', '${user.name} 已签到 $courseName', threadId: user.uid);
             _recordSignHistory(
               account: user.name,
               platform: '雨课堂',
@@ -476,7 +476,7 @@ class AutoSignService {
 
     if (status != null && status['signed'] == true) {
       logger.i('雨课堂账号 ${user.name} 课程 $courseName 已签到（动态二维码状态确认）');
-      _showNotification('雨课堂签到成功', '${user.name} 已签到 $courseName');
+      _showNotification('雨课堂签到成功', '${user.name} 已签到 $courseName', threadId: user.uid);
       _recordSignHistory(
         account: user.name,
         platform: '雨课堂',
@@ -496,7 +496,7 @@ class AutoSignService {
       time: DateTime.now(),
     );
     logger.w('雨课堂账号 ${user.name} 课程 $courseName 开启动态二维码签到，需手动扫码');
-    _showNotification('雨课堂需手动签到', '${user.name} 课程 $courseName 需手动扫码');
+    _showNotification('雨课堂需手动签到', '${user.name} 课程 $courseName 需手动扫码', threadId: user.uid);
     _recordSignHistory(
       account: user.name,
       platform: '雨课堂',
@@ -529,7 +529,7 @@ class AutoSignService {
     if (location == null) {
       logger.w('雨课堂账号 ${user.name} 课程 $courseName 需要位置签到，但未配置位置');
       _showNotification(
-          '雨课堂需手动签到', '${user.name} 课程 $courseName 需要位置签到，请手动签到');
+          '雨课堂需手动签到', '${user.name} 课程 $courseName 需要位置签到，请手动签到', threadId: user.uid);
       _recordSignHistory(
         account: user.name,
         platform: '雨课堂',
@@ -556,7 +556,7 @@ class AutoSignService {
     final submit = await api.submitLocationCheckIn(lessonId, lat, lng, location.address);
     if (submit != null && submit['code'] == 0) {
       logger.i('雨课堂账号 ${user.name} 课程 $courseName 位置签到成功');
-      _showNotification('雨课堂签到成功', '${user.name} 已签到 $courseName（位置）');
+      _showNotification('雨课堂签到成功', '${user.name} 已签到 $courseName（位置）', threadId: user.uid);
       _recordSignHistory(
         account: user.name,
         platform: '雨课堂',
@@ -714,7 +714,7 @@ class AutoSignService {
           signType, user, active, courseId, classId, location, imageObjectIds);
         if (result == 'success') {
           logger.i('账号 ${user.name} 自动签到成功: ${active.name}');
-          _showNotification('自动签到成功', '${user.name} 已签到 ${active.name}');
+          _showNotification('自动签到成功', '${user.name} 已签到 ${active.name}', threadId: user.uid);
           _recordSignHistory(
             account: user.name,
             platform: '学习通',
@@ -790,11 +790,12 @@ class AutoSignService {
     }
   }
 
-  void _showNotification(String title, String body) {
+  void _showNotification(String title, String body, {String? threadId}) {
     try {
       NotificationService().show(
         title: title,
         body: body,
+        threadId: threadId,
         androidDetails: const AndroidNotificationDetails(
           'auto_sign_channel',
           '自动签到',

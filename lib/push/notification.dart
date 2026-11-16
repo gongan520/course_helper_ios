@@ -29,15 +29,21 @@ class NotificationService {
     required String title,
     required String body,
     String? payload,
+    String? threadId,
     required AndroidNotificationDetails androidDetails,
   }) async {
     await initialize();
 
-    const darwinDetails = DarwinNotificationDetails(
+    // threadId 用于区分不同账号的通知：
+    // iOS 上映射为 threadIdentifier，Android 上映射为 groupKey。
+    // 相同 threadId 的通知会归为一组，不同 threadId 的通知则分开显示，
+    // 从而保证「登几个账号就弹几条签到通知」，不被系统合并。
+    final darwinDetails = DarwinNotificationDetails(
       presentSound: true,
       presentAlert: true,
       presentBanner: true,
-      presentList: true
+      presentList: true,
+      threadIdentifier: threadId,
     );
 
     await _plugin.show(
