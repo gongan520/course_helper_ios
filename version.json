@@ -1,6 +1,6 @@
 {
-  "version": "1.3.1",
-  "release_notes": "1. 签到通知按账号分开显示：登录几个账号就弹几条通知，不再被 iOS 合并\n2. iOS 后台定位保活：托管/定时签到在后台也能持续运行\n3. AI 全自动答题：雨课堂收到题目推送后自动识别、自动作答、自动提交\n4. 修复 iOS 签到结果通知不显示（横幅/通知中心/锁屏全部开启）",
-  "ipa_url": "https://github.com/gongan520/course_helper_ios/releases/download/v1.3.1/CourseHelper_1.3.1_unsigned.ipa",
+  "version": "1.3.2",
+  "release_notes": "1. 修复检查更新：改用国内直连实时源（gh-proxy），不用翻墙也能检查到新版本\n2. 下载走国内加速，无需翻墙\n3. 签到通知按账号分开显示\n4. iOS 后台定位保活 + AI 全自动答题",
+  "ipa_url": "https://github.com/gongan520/course_helper_ios/releases/download/v1.3.2/CourseHelper_1.3.2_unsigned.ipa",
   "page_url": "https://github.com/gongan520/course_helper_ios/releases/latest"
 }

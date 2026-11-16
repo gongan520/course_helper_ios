@@ -9,11 +9,13 @@ import '../utils/storage.dart';
 class Update {
   static const _skipVersionKey = 'skip_version';
 
-  // 多源版本信息地址（依次尝试，翻墙环境 GitHub raw 最实时，CDN 兜底）
+  // 多源版本信息地址（依次尝试，国内直连 + 实时的加速源优先）
+  // gh-proxy.com / ghproxy.net 是国内可直连的 GitHub 加速代理，实时、无 CDN 顽固缓存；
+  // raw 作为翻墙环境的兜底。
   static const _versionUrlList = [
+    'https://gh-proxy.com/https://raw.githubusercontent.com/gongan520/course_helper_ios/main/version.json',
+    'https://ghproxy.net/https://raw.githubusercontent.com/gongan520/course_helper_ios/main/version.json',
     'https://raw.githubusercontent.com/gongan520/course_helper_ios/main/version.json',
-    'https://fastly.jsdelivr.net/gh/gongan520/course_helper_ios@main/version.json',
-    'https://jsdelivr.b-cdn.net/gh/gongan520/course_helper_ios@main/version.json',
   ];
   static const _latestReleasePageUrl = 'https://github.com/gongan520/course_helper_ios/releases/latest';
 
@@ -91,15 +93,25 @@ class Update {
     }
   }
 
-  // 下载 IPA：直接打开原下载链接（翻墙环境下 GitHub 直链可满速）
+  // 下载 IPA：github.com 直链国内慢，自动加国内加速前缀，失败则回退原直链
   static Future<void> _launchDownload(String downloadUrl) async {
-    final uri = Uri.parse(downloadUrl);
-    try {
-      if (await canLaunchUrl(uri)) {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
+    final urls = <String>[downloadUrl];
+    if (downloadUrl.contains('github.com')) {
+      urls.insert(
+        0,
+        'https://gh-proxy.com/$downloadUrl',
+      );
+    }
+    for (final u in urls) {
+      final uri = Uri.parse(u);
+      try {
+        if (await canLaunchUrl(uri)) {
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+          return;
+        }
+      } catch (_) {
+        // 尝试下一个
       }
-    } catch (_) {
-      // 忽略
     }
   }
 
