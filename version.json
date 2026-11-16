@@ -1,6 +1,6 @@
 {
-  "version": "1.3.2",
-  "release_notes": "1. 修复检查更新：改用国内直连实时源（gh-proxy），不用翻墙也能检查到新版本\n2. 下载走国内加速，无需翻墙\n3. 签到通知按账号分开显示\n4. iOS 后台定位保活 + AI 全自动答题",
-  "ipa_url": "https://github.com/gongan520/course_helper_ios/releases/download/v1.3.2/CourseHelper_1.3.2_unsigned.ipa",
+  "version": "1.3.3",
+  "release_notes": "1. 灵动岛(Live Activity)：托管签到状态显示在灵动岛/锁屏，设置页可开关（需 iPhone 14 Pro+，iOS 16.1+）\n2. 检查更新增加日志，便于定位网络问题\n3. 签到通知按账号分开显示\n4. iOS 后台定位保活 + AI 全自动答题",
+  "ipa_url": "https://github.com/gongan520/course_helper_ios/releases/download/v1.3.3/CourseHelper_1.3.3_unsigned.ipa",
   "page_url": "https://github.com/gongan520/course_helper_ios/releases/latest"
 }

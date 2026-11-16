@@ -1,6 +1,7 @@
 import Flutter
 import UIKit
 import CoreLocation
+import ActivityKit
 
 @main
 @objc class AppDelegate: FlutterAppDelegate {
@@ -9,6 +10,7 @@ import CoreLocation
   private var locationManager: CLLocationManager?
   private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
   private let keepAliveChannel = "com.gongan520.coursehelper/keepalive"
+  private let liveActivityChannel = "com.gongan520.coursehelper/liveactivity"
 
   override func application(
     _ application: UIApplication,
@@ -33,9 +35,55 @@ import CoreLocation
           result(FlutterMethodNotImplemented)
         }
       }
+
+      // 灵动岛（Live Activity）控制通道
+      let laChannel = FlutterMethodChannel(
+        name: liveActivityChannel,
+        binaryMessenger: controller.binaryMessenger
+      )
+      laChannel.setMethodCallHandler { [weak self] (call, result) in
+        self?.handleLiveActivity(call, result: result)
+      }
     }
 
     return result
+  }
+
+  /// 处理灵动岛控制指令。
+  private func handleLiveActivity(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+    guard #available(iOS 16.1, *) else {
+      result(FlutterError(code: "unsupported", message: "需要 iOS 16.1+", details: nil))
+      return
+    }
+    switch call.method {
+    case "start":
+      let args = call.arguments as? [String: Any] ?? [:]
+      let status = args["statusText"] as? String ?? "正在托管签到"
+      let accounts = args["signedAccounts"] as? String ?? ""
+      let count = args["hostingCount"] as? Int ?? 0
+      LiveActivityManager.shared.start(
+        statusText: status,
+        signedAccounts: accounts,
+        hostingCount: count
+      )
+      result(nil)
+    case "update":
+      let args = call.arguments as? [String: Any] ?? [:]
+      let status = args["statusText"] as? String ?? "正在托管签到"
+      let accounts = args["signedAccounts"] as? String ?? ""
+      let count = args["hostingCount"] as? Int ?? 0
+      LiveActivityManager.shared.update(
+        statusText: status,
+        signedAccounts: accounts,
+        hostingCount: count
+      )
+      result(nil)
+    case "stop":
+      LiveActivityManager.shared.stop()
+      result(nil)
+    default:
+      result(FlutterMethodNotImplemented)
+    }
   }
 
   /// 启动后台定位保活（由 Flutter 侧通过 MethodChannel 调用）。

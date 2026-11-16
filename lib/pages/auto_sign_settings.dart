@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/user.dart';
 import '../service/ai_answer.dart';
 import '../service/auto_sign.dart';
+import '../service/live_activity.dart';
 import '../service/sign_history.dart';
 import '../session/account.dart';
 
@@ -30,6 +31,9 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
   // 每个账号的 AI 答题开关状态（内存缓存，uid -> 是否启用）
   Map<String, bool> _aiEnabledMap = {};
 
+  // 灵动岛开关状态
+  bool _liveActivityEnabled = false;
+
   @override
   void initState() {
     super.initState();
@@ -39,6 +43,7 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
     _aiBaseUrlController = TextEditingController(text: aiConfig.baseUrl);
     _aiModelController = TextEditingController(text: aiConfig.model);
     _aiEnabledMap = AiAnswerService().enabledAccounts;
+    _liveActivityEnabled = LiveActivity().isEnabled;
     _loadHistory();
   }
 
@@ -693,6 +698,17 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
             onChanged: (v) {
               setState(() => _config.notifyOnResult = v);
               AutoSignService().updateConfig(_config);
+            },
+          ),
+          const Divider(height: 1),
+          SwitchListTile(
+            secondary: const Icon(Icons.widgets_outlined),
+            title: const Text('灵动岛显示'),
+            subtitle: const Text('托管签到状态显示在灵动岛/锁屏（需 iPhone 14 Pro 及以上，iOS 16.1+）'),
+            value: _liveActivityEnabled,
+            onChanged: (v) {
+              setState(() => _liveActivityEnabled = v);
+              LiveActivity().setEnabled(v);
             },
           ),
           const Divider(height: 1),

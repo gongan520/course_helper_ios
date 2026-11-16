@@ -15,6 +15,7 @@ import '../setting/course_setting.dart';
 import '../utils/logger.dart';
 import '../utils/storage.dart';
 import '../platform.dart';
+import 'live_activity.dart';
 import 'sign_history.dart';
 
 /// 单个账号的签到模式
@@ -238,7 +239,11 @@ class AutoSignService {
     _pollTimer = null;
 
     // 没有任何账号开启自动/定时则完全不轮询
-    if (!_config.hasAnyActive) return;
+    if (!_config.hasAnyActive) {
+      // 关闭灵动岛
+      LiveActivity().hide();
+      return;
+    }
 
     // 周期轮询：托管模式 + 定时模式（时间段内）都走同一套托管轮询逻辑。
     // 定时模式账号是否在窗口内由 _accountsForPoll 动态判断，窗口外自动跳过。
@@ -249,6 +254,13 @@ class AutoSignService {
       );
       // 启动后立即轮询一次
       Future.delayed(const Duration(seconds: 3), () => _pollSignIns());
+      // 启动灵动岛：显示"正在托管签到"
+      LiveActivity().show(
+        statusText: '正在托管签到',
+        hostingCount: _config.accountModes.values
+            .where((v) => v == AutoSignMode.auto.name || v == AutoSignMode.scheduled.name)
+            .length,
+      );
     }
   }
 
@@ -805,9 +817,28 @@ class AutoSignService {
           visibility: NotificationVisibility.public,
         ),
       );
+
+      // 联动灵动岛：签到结果同步到灵动岛/锁屏实时活动
+      if (title.contains('成功')) {
+        LiveActivity().update(
+          statusText: '已签到',
+          signedAccounts: _extractAccountName(body),
+        );
+      } else if (title.contains('需手动')) {
+        LiveActivity().update(
+          statusText: '需手动签到',
+          signedAccounts: _extractAccountName(body),
+        );
+      }
     } catch (e) {
       logger.e('通知失败: $e');
     }
+  }
+
+  /// 从通知 body 里提取账号名（body 形如「张三 已签到 计算机网络技术A」）。
+  String _extractAccountName(String body) {
+    final parts = body.split(' ');
+    return parts.isNotEmpty ? parts.first : '';
   }
 
   /// 写入一条签到历史记录（异步、不阻塞签到流程）

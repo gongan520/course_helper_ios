@@ -4,24 +4,24 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:dio/dio.dart';
 
 import '../main.dart' show navigatorKey;
+import '../utils/logger.dart';
 import '../utils/storage.dart';
 
 class Update {
   static const _skipVersionKey = 'skip_version';
 
-  // 多源版本信息地址（依次尝试，国内直连 + 实时的加速源优先）
-  // gh-proxy.com / ghproxy.net 是国内可直连的 GitHub 加速代理，实时、无 CDN 顽固缓存；
-  // raw 作为翻墙环境的兜底。
+  // 多源版本信息地址（依次尝试，翻墙环境 raw 最实时，国内加速源 gh-proxy 兜底）
   static const _versionUrlList = [
+    'https://raw.githubusercontent.com/gongan520/course_helper_ios/main/version.json',
     'https://gh-proxy.com/https://raw.githubusercontent.com/gongan520/course_helper_ios/main/version.json',
     'https://ghproxy.net/https://raw.githubusercontent.com/gongan520/course_helper_ios/main/version.json',
-    'https://raw.githubusercontent.com/gongan520/course_helper_ios/main/version.json',
   ];
   static const _latestReleasePageUrl = 'https://github.com/gongan520/course_helper_ios/releases/latest';
 
   static Future<void> checkUpdate({bool ignoreSkip = false}) async {
     final packageInfo = await PackageInfo.fromPlatform();
     final currentVersion = packageInfo.version;
+    logger.i('检查更新：当前版本 v$currentVersion, ignoreSkip=$ignoreSkip');
 
     final dio = Dio();
     dio.options.connectTimeout = const Duration(seconds: 8);
@@ -30,17 +30,21 @@ class Update {
     Map<String, dynamic>? data;
     for (final url in _versionUrlList) {
       try {
+        logger.i('检查更新：尝试源 $url');
         final response = await dio.get(url);
         if (response.data is Map) {
           data = (response.data as Map).cast<String, dynamic>();
+          logger.i('检查更新：源 $url 返回成功，version=${data?['version']}');
           break;
         }
-      } catch (_) {
+      } catch (e) {
+        logger.w('检查更新：源 $url 失败: $e');
         // 尝试下一个源
       }
     }
 
     if (data == null) {
+      logger.e('检查更新：所有源均失败');
       if (ignoreSkip) {
         _showToast('检查更新失败，请检查网络后重试');
       }
@@ -49,6 +53,7 @@ class Update {
 
     final latestVersion = data['version']?.toString() ?? '';
     final skipVersion = StorageManager.prefs.getString(_skipVersionKey) ?? '';
+    logger.i('检查更新：最新版本 v$latestVersion, 已跳过版本 $skipVersion');
 
     final hasNewer = (ignoreSkip || latestVersion != skipVersion) &&
         _isNewerVersion(latestVersion, currentVersion);
