@@ -35,9 +35,9 @@ class NotificationService {
 
     const darwinDetails = DarwinNotificationDetails(
       presentSound: true,
-      presentAlert: false,
-      presentBanner: false,
-      presentList: false
+      presentAlert: true,
+      presentBanner: true,
+      presentList: true
     );
 
     await _plugin.show(
