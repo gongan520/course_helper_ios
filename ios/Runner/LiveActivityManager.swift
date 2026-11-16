@@ -3,7 +3,7 @@ import ActivityKit
 
 /// 主 App 侧的 Live Activity 管理器。
 /// 负责：启动、更新、结束签到状态 Live Activity，并写入 App Group 共享数据供 Widget 读取。
-@available(iOS 16.1, *)
+@available(iOS 16.2, *)
 final class LiveActivityManager {
 
     static let shared = LiveActivityManager()

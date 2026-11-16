@@ -51,8 +51,8 @@ import ActivityKit
 
   /// 处理灵动岛控制指令。
   private func handleLiveActivity(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
-    guard #available(iOS 16.1, *) else {
-      result(FlutterError(code: "unsupported", message: "需要 iOS 16.1+", details: nil))
+    guard #available(iOS 16.2, *) else {
+      result(FlutterError(code: "unsupported", message: "需要 iOS 16.2+", details: nil))
       return
     }
     switch call.method {
