@@ -23,14 +23,17 @@ final class LiveActivityManager {
     /// 当前完整状态（帧定时器只需改 frame 后重新推送）
     private var latest = SignInActivityAttributes.ContentState(statusText: "")
 
-    /// 动画帧序号
+    /// 动画帧序号（取模 24：8 帧步态与 12 帧来回走动的最小公倍数）
     private var frameIndex: Int = 0
 
-    /// 动画定时器（0.8 秒一帧，8 帧走完一个步态循环）
+    /// 动画定时器（1.2 秒一帧，兼顾「看得出在走」与系统更新频率限制）
     private var frameTimer: Timer?
 
     /// 上一帧是否还在写入（避免系统变慢时更新任务堆叠）
     private var updating = false
+
+    /// 写入批次号，用于超时复位 `updating`
+    private var pushToken: Int = 0
 
     private init() {}
 
@@ -56,6 +59,35 @@ final class LiveActivityManager {
         return payload
     }
 
+    /// 数据结构版本。
+    ///
+    /// v1.3.7 把 `hostingCount` 拆成了 auto/scheduled/manual/ai 四个字段。
+    /// 系统会跨 App 升级保留旧的实时活动，旧活动是用旧结构编码的，
+    /// 被新版本「认领」后容易出现 Widget 渲染不出来（灵动岛空白）的情况。
+    /// 因此版本号变化时先把所有残留活动清掉，再重建一个全新的。
+    private static let schemaVersion = 2
+    private static let schemaKey = "live_schema_version"
+
+    /// 升级后首次启动时清理旧结构残留活动。
+    private func migrateIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard defaults.integer(forKey: Self.schemaKey) != Self.schemaVersion else { return }
+        defaults.set(Self.schemaVersion, forKey: Self.schemaKey)
+
+        stopTicker()
+        activity = nil
+        let leftovers = Activity<SignInActivityAttributes>.activities
+        guard !leftovers.isEmpty else { return }
+        let finalState = SignInActivityAttributes.ContentState(
+            statusText: "已停止托管",
+            mood: "sleep"
+        )
+        for old in leftovers {
+            end(old, with: finalState)
+        }
+        NSLog("LiveActivity 清理旧版本残留活动 \(leftovers.count) 个")
+    }
+
     /// 启动（或复用）实时活动。
     @discardableResult
     func start(
@@ -68,6 +100,7 @@ final class LiveActivityManager {
         mood: String,
         signedCount: Int
     ) -> [String: Any] {
+        migrateIfNeeded()
         let state = SignInActivityAttributes.ContentState(
             statusText: statusText,
             signedAccounts: signedAccounts,
@@ -191,20 +224,28 @@ final class LiveActivityManager {
 
     // MARK: - 动画帧
 
-    /// 启动帧定时器：不断更新 frame，让灵动岛上的小新与小白「走」起来。
+    /// 启动帧定时器：不断更新 frame，驱动「小新牵小白来回走」的画面。
     ///
-    /// Live Activity 的视图不支持持久动画，只能通过频繁更新内容来驱动。
-    /// App 有后台定位保活，因此后台也能持续出帧。
+    /// Live Activity 的视图不支持持续动画，只能通过更新 contentState 驱动：
+    /// 24 帧为一个完整往返（单程 12 帧，约 12 秒）。
+    /// 频率不能太高，否则会被系统限流（表现为活动被结束、灵动岛消失）。
     private func startTicker() {
         guard frameTimer == nil else { return }
-        let timer = Timer(timeInterval: 0.8, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
-            guard let target = self.activity, self.isUsable(target) else {
+            guard let target = self.activity else {
+                self.stopTicker()
+                return
+            }
+            // 活动被系统回收 / 用户划掉：清空引用，交给下一次 update 重建，
+            // 避免定格在一个已经消失的活动上。
+            guard self.isUsable(target) else {
+                self.activity = nil
                 self.stopTicker()
                 return
             }
             guard !self.updating else { return }
-            self.frameIndex = (self.frameIndex + 1) % 600
+            self.frameIndex = (self.frameIndex + 1) % 24
             var state = self.latest
             state.frame = self.frameIndex
             self.push(state: state, to: target)
@@ -258,17 +299,29 @@ final class LiveActivityManager {
         to target: Activity<SignInActivityAttributes>
     ) {
         updating = true
+        pushToken &+= 1
+        let token = pushToken
+
+        // 兜底复位：即使 update 的 await 迟迟不返回（系统节流时会发生），
+        // 也不能让 updating 永久卡住，否则后续所有帧都会被跳过。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            guard let self = self else { return }
+            if self.pushToken == token { self.updating = false }
+        }
+
         if #available(iOS 16.2, *) {
             Task { [weak self] in
                 await target.update(
                     ActivityContent(state: state, staleDate: Date().addingTimeInterval(8 * 3600))
                 )
-                self?.updating = false
+                guard let self = self else { return }
+                if self.pushToken == token { self.updating = false }
             }
         } else {
             Task { [weak self] in
                 await target.update(using: state)
-                self?.updating = false
+                guard let self = self else { return }
+                if self.pushToken == token { self.updating = false }
             }
         }
     }
