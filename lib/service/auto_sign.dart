@@ -194,6 +194,11 @@ class AutoSignService {
   AutoSignConfig _config = AutoSignConfig();
   AutoSignConfig get config => _config;
 
+  // 配置是否已从本地加载完成。未加载完成时不要按「模式」过滤账号，
+  // 否则所有账号都会被当成默认的「手动」，导致该签的也不签。
+  bool _initialized = false;
+  bool get isInitialized => _initialized;
+
   Timer? _pollTimer;
 
   // 已处理过的活动/课程 id，避免重复签到
@@ -223,6 +228,7 @@ class AutoSignService {
   /// 初始化并启动后台任务
   Future<void> initialize() async {
     _config = await AutoSignConfig.load();
+    _initialized = true;
     _startTimers();
     logger.i('自动签到服务已初始化: 账号模式数=${_config.accountModes.length}');
   }
@@ -230,6 +236,7 @@ class AutoSignService {
   /// 更新配置并重启定时器
   Future<void> updateConfig(AutoSignConfig config) async {
     _config = config;
+    _initialized = true;
     await config.save();
     _startTimers();
   }
@@ -339,8 +346,24 @@ class AutoSignService {
         active.activeType != ActiveType.scheduledSignIn) {
       return;
     }
+    // 推送只属于当前会话账号，按该账号自己的模式判断是否自动签：
+    // - 手动：不自动
+    // - 托管：任何时间
+    // - 定时：仅在其设定的时间段内
+    final owner = AccountManager.currentUser;
+    if (owner == null || !owner.status) return;
+    if (_initialized) {
+      final mode = _config.modeOf(owner.uid);
+      if (mode == AutoSignMode.manual) return;
+      if (mode == AutoSignMode.scheduled &&
+          !_scheduledInWindowUids().contains(owner.uid)) {
+        logger.i('账号 ${owner.name} 为定时模式但不在时间段内，忽略推送签到');
+        return;
+      }
+    }
     logger.i('收到签到活动推送，准备自动签到: ${active.name}');
-    await _autoSignChaoxingActive(active, courseId, classId, scheduledOnly: false);
+    await _autoSignChaoxingActive(active, courseId, classId,
+        scheduledOnly: false, ownerUser: owner);
   }
 
   /// 周期轮询签到
@@ -403,7 +426,14 @@ class AutoSignService {
       if (onLesson == null || onLesson.isEmpty) continue;
 
       // 课程名映射：onLesson 仅含 courseId/lessonId，通过课程列表补全课程名
-      final courses = await RCCourseApi.getCoursesList(onLesson, user.uid) ?? const <Course>[];
+      final ownCourses = await RCCourseApi.getCoursesList(onLesson, user.uid);
+      final courses = ownCourses ?? const <Course>[];
+      final ownCourseIds = courses
+          .map((c) => c.courseId)
+          .where((id) => id.isNotEmpty)
+          .toSet();
+      // 只有课程列表拉取成功时，才能校验「这节课是否属于该账号」
+      final canVerifyOwnership = ownCourses != null && ownCourseIds.isNotEmpty;
       final courseByLesson = <String, Course>{};
       for (final c in courses) {
         final lid = c.lessonId;
@@ -414,6 +444,22 @@ class AutoSignService {
         final lessonId = lesson['lessonId']?.toString();
         if (lessonId == null || lessonId.isEmpty) continue;
 
+        final ownedCourse = courseByLesson[lessonId];
+        final lessonCourseId = ownedCourse?.courseId ??
+            lesson['courseId']?.toString() ??
+            '';
+
+        // 账号隔离校验：这节课所属课程不在本账号的课程列表里，
+        // 说明这是别人的课（历史上可能被跨账号签到拉进了教室）。
+        // 必须跳过，否则账号 A 会去签账号 B 的课。
+        if (canVerifyOwnership &&
+            lessonCourseId.isNotEmpty &&
+            !ownCourseIds.contains(lessonCourseId)) {
+          logger.w('雨课堂账号 ${user.name} 的上课记录 $lessonId'
+              '（课程 $lessonCourseId）不在其课程列表中，跳过（避免跨账号误签）');
+          continue;
+        }
+
         final key = 'rc|${user.uid}|$lessonId';
         // 已成功签到或已判定需手动，则跳过，避免重复签到
         if (_processedIds.contains(key)) continue;
@@ -422,9 +468,8 @@ class AutoSignService {
         _inProgressIds.add(key);
 
         try {
-          final course = courseByLesson[lessonId];
-          final courseId = course?.courseId ?? lesson['courseId']?.toString() ?? '';
-          final courseName = course?.name ??
+          final courseId = ownedCourse?.courseId ?? lessonCourseId;
+          final courseName = ownedCourse?.name ??
               (lesson['courseName'] ??
                       lesson['name'] ??
                       lesson['course_name'] ??
@@ -617,28 +662,36 @@ class AutoSignService {
             continue;
           }
           if (!active.status) continue;
-          if (_processedIds.contains(active.id)) continue;
+          // 去重键带账号维度，避免两个账号选了同一门课时互相漏签
+          if (_processedIds.contains('${active.id}|${user.uid}')) continue;
           logger.i('轮询发现新签到活动: ${active.name} (账号 ${user.name})');
           await _autoSignChaoxingActive(
               active, course.courseId, classId,
-              scheduledOnly: scheduledOnly, courseName: course.name);
+              scheduledOnly: scheduledOnly, courseName: course.name,
+              ownerUser: user);
         }
       }
     }
   }
 
   /// 执行学习通单个签到活动的自动签到
+  ///
+  /// [ownerUser] 为发现该活动的账号（即拥有这门课程的账号）。
+  /// 托管签到只应针对「拥有该课程」的账号，不能跨账号误签他人课程。
   Future<void> _autoSignChaoxingActive(
     Active active,
     String courseId,
     String classId, {
     required bool scheduledOnly,
     String? courseName,
+    User? ownerUser,
   }) async {
+    // 去重键统一带账号维度（activeId|uid），避免多账号选同一门课时互相漏签/误签
+    final dedupKey = '${active.id}|${ownerUser?.uid ?? 'unknown'}';
     // 已处理过（成功或已判定无法自动）则不再重复处理，避免重复签到
-    if (_processedIds.contains(active.id)) return;
-    if (_inProgressIds.contains(active.id)) return;
-    _inProgressIds.add(active.id);
+    if (_processedIds.contains(dedupKey)) return;
+    if (_inProgressIds.contains(dedupKey)) return;
+    _inProgressIds.add(dedupKey);
 
     try {
       // 确定签到类型
@@ -649,21 +702,26 @@ class AutoSignService {
         final info = await ActiveApi.getActiveInfoWeb(active.id);
         final otherId = info?['otherId'];
         if (otherId == null) {
-          _processedIds.add(active.id);
+          _processedIds.add(dedupKey);
           return;
         }
         try {
           signType = getSignTypeFromIndex(int.parse(otherId.toString()));
         } catch (e) {
-          _processedIds.add(active.id);
+          _processedIds.add(dedupKey);
           return;
         }
       }
 
-      // 获取需要签到的账号（按模式筛选）
-      final accounts = _accountsForPoll(scheduledOnly: scheduledOnly);
+      // 获取需要签到的账号：
+      // 只处理「拥有该课程」的账号（ownerUser），而非所有托管账号，
+      // 避免账号 A 的课程活动把账号 B 也拉去签到（跨账号误签 bug）。
+      // 若未明确传入 ownerUser（如极少数无法归属的调用），则回退到全部托管账号。
+      final accounts = ownerUser != null
+          ? <User>[ownerUser]
+          : _accountsForPoll(scheduledOnly: scheduledOnly);
       if (accounts.isEmpty) {
-        _processedIds.add(active.id);
+        _processedIds.add(dedupKey);
         return;
       }
 
@@ -686,7 +744,7 @@ class AutoSignService {
 
       if (needSign.isEmpty) {
         logger.i('活动 ${active.name} 所有账号已签到，跳过');
-        _processedIds.add(active.id);
+        _processedIds.add(dedupKey);
         return;
       }
 
@@ -710,7 +768,7 @@ class AutoSignService {
             result: '需手动签到',
           );
         }
-        _processedIds.add(active.id);
+        _processedIds.add(dedupKey);
         return;
       }
 
@@ -746,11 +804,11 @@ class AutoSignService {
         }
       }
 
-      _processedIds.add(active.id);
+      _processedIds.add(dedupKey);
     } catch (e, st) {
       logger.e('自动签到异常: $e\n$st');
     } finally {
-      _inProgressIds.remove(active.id);
+      _inProgressIds.remove(dedupKey);
     }
   }
 

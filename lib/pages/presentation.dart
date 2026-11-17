@@ -14,10 +14,12 @@ import '../api/course.dart';
 import '../api/image.dart';
 import '../api/api_service.dart';
 import '../models/presentation.dart';
+import '../models/user.dart';
 import '../session/account.dart';
 import '../platform.dart';
 import '../push/notification.dart';
 import '../service/ai_answer.dart';
+import '../service/auto_sign.dart';
 import '../utils/logger.dart';
 import '../utils/storage.dart';
 import '../utils/time.dart';
@@ -138,10 +140,71 @@ class _PresentationPageState extends State<PresentationPage> {
     _connectWebSocket();
   }
 
+  /// 找出「确实有这节课」的账号。
+  ///
+  /// 打开某门课的课堂页时，只能对本就在这节课里的账号操作。
+  /// 否则 checkIn 的 joinIfNotIn 会把无关账号强行拉进别人的教室，
+  /// 导致该账号之后每节课都被托管替它签到（跨账号误签）。
+  Future<List<User>> _accountsHavingLesson(String lessonId) async {
+    final result = <User>[];
+    for (final user in AccountManager.allAccounts) {
+      try {
+        final onLesson = await RCCourseApi.getOnLesson(userId: user.uid);
+        final has = onLesson?.any(
+              (e) => e['lessonId']?.toString() == lessonId,
+            ) ??
+            false;
+        if (has) result.add(user);
+      } catch (e) {
+        logger.w('检查账号 ${user.name} 是否在课堂 $lessonId 失败: $e');
+      }
+    }
+    return result;
+  }
+
+  /// 打开课堂页 / 收到位置签到事件时，实际参与签到的账号集合。
+  ///
+  /// 规则：
+  /// 1. 只包含「确实有这节课」的账号（避免 joinIfNotIn 拉无关账号进班）；
+  /// 2. 跳过「手动模式」的账号（该模式承诺不自动签到）；
+  /// 3. 当前会话账号始终保留——用户主动打开这个课堂页，是明确的签到意图。
+  Future<List<User>> _signTargetsForLesson(String lessonId) async {
+    final current = AccountManager.currentUser;
+    final owners = await _accountsHavingLesson(lessonId);
+
+    // 配置尚未加载完成时不做模式过滤，避免把所有人都当成「手动」
+    final service = AutoSignService();
+    final respectMode = service.isInitialized;
+
+    final result = <User>[];
+    for (final u in owners) {
+      final isCurrent = current != null && u.uid == current.uid;
+      if (!isCurrent &&
+          respectMode &&
+          service.config.modeOf(u.uid) == AutoSignMode.manual) {
+        logger.i('跳过手动模式账号 ${u.name}（课堂 $lessonId）');
+        continue;
+      }
+      result.add(u);
+    }
+
+    // 兜底：当前账号一定处理（即使课堂列表暂时没刷新出来）
+    if (current != null && !result.any((u) => u.uid == current.uid)) {
+      result.add(current);
+    }
+    return result;
+  }
+
   Future<void> _checkToken() async {
     final lessonToken = RCCourseApi().lessonToken;
     if (lessonToken == null) {
-      final allAccounts = AccountManager.allAccounts;
+      // 只对「本就在这节课里、且非手动模式」的账号签到，
+      // 避免把无关账号拉进别人的课堂（跨账号误签的源头）
+      final allAccounts = await _signTargetsForLesson(widget.lessonId);
+      if (allAccounts.isEmpty) {
+        logger.w('没有可签到的账号（lessonId=${widget.lessonId}），跳过');
+        return;
+      }
       
       final results = await ApiService.sendForEachUser(
         allAccounts,
@@ -606,8 +669,12 @@ class _PresentationPageState extends State<PresentationPage> {
     });
     _scrollTimelineToBottom();
 
-    // 查询所有账号签到状态
-    final allAccounts = AccountManager.allAccounts;
+    // 只对「本就在这节课里、且非手动模式」的账号签到，避免跨账号误签
+    final allAccounts = await _signTargetsForLesson(lessonId);
+    if (allAccounts.isEmpty) {
+      logger.w('位置签到：没有可签到的账号（lessonId=$lessonId），跳过');
+      return;
+    }
     final getResults = await ApiService.sendForEachUser(
       allAccounts,
       (user) async {
@@ -1716,8 +1783,13 @@ class _PresentationPageState extends State<PresentationPage> {
   }
 
   Future<void> _submitForAllAccounts(String problemId, int problemType, List<String>? imageUrls, bool isTimeout, int? problemDt) async {
-    final allAccounts = AccountManager.allAccounts;
-    
+    // 只对「确实在这节课里」的账号提交答案，避免替别的账号答别人的题
+    var allAccounts = await _accountsHavingLesson(widget.lessonId);
+    final current = AccountManager.currentUser;
+    if (current != null && !allAccounts.any((u) => u.uid == current.uid)) {
+      allAccounts = [...allAccounts, current];
+    }
+
     if (allAccounts.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

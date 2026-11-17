@@ -10,6 +10,7 @@ import '../../api/api_service.dart';
 import '../../session/account.dart';
 import '../../models/course.dart';
 import '../../models/active.dart';
+import '../../models/user.dart';
 import '../../utils/logger.dart';
 import '../widget/scan.dart';
 import '../widget/avatar.dart';
@@ -470,16 +471,79 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
     }
   }
 
-  /// 为所有用户扫描
+  /// 从雨课堂动态二维码链接里尽量解析 lessonId（解析不到返回 null）
+  String? _lessonIdFromQrUrl(String url) {
+    try {
+      final q = Uri.parse(url).queryParameters;
+      for (final key in const ['lessonId', 'lesson_id', 'lessonid']) {
+        final v = q[key];
+        if (v != null && v.isNotEmpty) return v;
+      }
+      final m = RegExp(r'lessonId[=/](\d+)', caseSensitive: false).firstMatch(url);
+      if (m != null) return m.group(1);
+    } catch (e) {
+      logger.w('解析二维码链接 lessonId 失败: $e');
+    }
+    return null;
+  }
+
+  /// 找出「确实有这节课」的账号
+  Future<List<User>> _accountsHavingLesson(String lessonId) async {
+    final result = <User>[];
+    for (final user in AccountManager.allAccounts) {
+      try {
+        final onLesson = await RCCourseApi.getOnLesson(userId: user.uid);
+        final has = onLesson?.any(
+              (e) => e['lessonId']?.toString() == lessonId,
+            ) ??
+            false;
+        if (has) result.add(user);
+      } catch (e) {
+        logger.w('检查账号 ${user.name} 是否在课堂 $lessonId 失败: $e');
+      }
+    }
+    return result;
+  }
+
+  /// 扫码签到。
+  ///
+  /// 只对「本就在这节课里」的账号扫码：scan 成功后内部会 checkIn，
+  /// 而 checkIn 带 joinIfNotIn，会把无关账号强行拉进别人的课堂。
   Future<void> _multiScan(BuildContext context, String qrCodeUrl) async {
-    final allAccounts = AccountManager.allAccounts;
-    if (allAccounts.isEmpty) {
+    if (AccountManager.allAccounts.isEmpty) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('没有可用的账号进行签到'))
       );
       return;
     }
+
+    final lessonId = _lessonIdFromQrUrl(qrCodeUrl);
+    var targets = lessonId == null
+        ? <User>[]
+        : await _accountsHavingLesson(lessonId);
+    if (lessonId == null) {
+      logger.w('二维码链接中未解析到 lessonId，仅当前账号扫码签到');
+    } else {
+      logger.i('扫码签到 lessonId=$lessonId，命中账号 '
+          '${targets.length}/${AccountManager.allAccounts.length}');
+    }
+
+    // 当前会话账号始终保留（用户主动扫的码）
+    final current = AccountManager.currentUser;
+    if (current != null && !targets.any((u) => u.uid == current.uid)) {
+      targets = [current];
+    }
+
+    if (targets.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('没有可用的账号进行签到'))
+      );
+      return;
+    }
+
+    final allAccounts = targets;
   
     setState(() {
       _isLoading = true;
