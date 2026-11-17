@@ -224,15 +224,14 @@ final class LiveActivityManager {
 
     // MARK: - 动画帧
 
-    /// 启动帧定时器：不断更新 frame，驱动「小新牵小白来回走」的画面。
+    /// 启动帧定时器：不断更新 frame，驱动灵动岛右侧那颗红心「跳动」。
     ///
-    /// Live Activity 的视图不支持持续动画，只能靠不断更新 contentState 出帧，
-    /// 所以帧率直接决定动画是否「自然」：
-    /// 0.4 秒一帧时每帧位移约 0.5pt，看起来是连续迈步；
+    /// Live Activity 的视图不支持持续动画，只能靠不断更新 contentState 出帧。
+    /// 4 帧一个心跳周期（正常 → 胀大 → 回落 → 微缩），0.4 秒一帧，约 1.6 秒跳一次；
     /// 再快（<0.25s）会被系统合并更新反而卡顿，也更耗电。
     private func startTicker() {
         guard frameTimer == nil else { return }
-        let timer = Timer(timeInterval: 0.3, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 0.4, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             guard let target = self.activity else {
                 self.stopTicker()
@@ -246,8 +245,9 @@ final class LiveActivityManager {
                 return
             }
             guard !self.updating else { return }
-            // 48 是步态周期(8)与位移周期(16)的公倍数，归零时动作不会跳帧
-            self.frameIndex = (self.frameIndex + 1) % 48
+            // 4 帧一个心跳周期（正常 → 胀大 → 回落 → 微缩），0.4 秒一帧，1.6 秒跳一次。
+            // 灵动岛上是静态场景，只有右边那颗红心需要这个 frame。
+            self.frameIndex = (self.frameIndex + 1) % 4
             var state = self.latest
             state.frame = self.frameIndex
             self.push(state: state, to: target)

@@ -6,31 +6,19 @@ import UIKit
 
 // MARK: - 内嵌插画素材
 //
-// 角色取自动画片原画面，按「迈步姿态」生成 8 帧后 base64 内嵌。
-// Widget Extension 加图片资源要在 Xcode 工程里手工配 build phase，容易漏打包。
+// 静态素材：动画原画面里「小新牵小白」整幅，抠掉草地背景后等比缩放。
+// 不用逐帧动画 —— 灵动岛现在是「左边静态场景 + 右边跳动红心」，
+// 所以只需要一张图；红心的跳动由主 App 定时推 frame 驱动。
 //
-// 三套帧：
-// - scene：小新牵小白整幅，用于展开态与锁屏（那里宽度足够，才走得出位移）
-// - shin / dog：单人帧，用于紧凑态。胶囊两侧各只有十几 pt，整幅塞进去每个角色
-//   只剩几像素，腿的摆动完全看不出来，所以紧凑态拆成单人各自迈步
+// 直接内嵌 base64 而不是放图片资源：Widget Extension 加资源要在 Xcode 工程里
+// 手工配 build phase，容易漏打包导致空白。
 
 @available(iOS 16.1, *)
 enum SignInArt {
-    static let sceneFrames: [UIImage?] = SceneFramesBase64.list.map { decode($0) }
-    static let shinFrames: [UIImage?] = ShinFramesBase64.list.map { decode($0) }
-    static let dogFrames: [UIImage?] = DogFramesBase64.list.map { decode($0) }
+    static let scene: UIImage? = decode(SceneBase64.data)
 
-    static let sceneAspect: CGFloat = 219.0 / 132.0
-    static let shinAspect: CGFloat = 88.0 / 132.0
-    static let dogAspect: CGFloat = 151.0 / 96.0
-
-    /// 取第 index 帧；任一帧解码失败时退到第 0 帧，避免整块空白
-    static func image(_ frames: [UIImage?], _ index: Int) -> UIImage? {
-        let n = frames.count
-        guard n > 0 else { return nil }
-        let i = ((index % n) + n) % n
-        return frames[i] ?? frames[0]
-    }
+    /// 场景图宽高比（宽 / 高）
+    static let sceneAspect: CGFloat = 437.0 / 264.0
 
     private static func decode(_ s: String) -> UIImage? {
         guard let data = Data(base64Encoded: s, options: .ignoreUnknownCharacters) else {
@@ -40,43 +28,8 @@ enum SignInArt {
     }
 }
 
-enum SceneFramesBase64 {
-    static let list: [String] = [
-        "__WALK0__",
-        "__WALK1__",
-        "__WALK2__",
-        "__WALK3__",
-        "__WALK4__",
-        "__WALK5__",
-        "__WALK6__",
-        "__WALK7__",
-    ]
-}
-
-enum ShinFramesBase64 {
-    static let list: [String] = [
-        "__SHIN0__",
-        "__SHIN1__",
-        "__SHIN2__",
-        "__SHIN3__",
-        "__SHIN4__",
-        "__SHIN5__",
-        "__SHIN6__",
-        "__SHIN7__",
-    ]
-}
-
-enum DogFramesBase64 {
-    static let list: [String] = [
-        "__DOG0__",
-        "__DOG1__",
-        "__DOG2__",
-        "__DOG3__",
-        "__DOG4__",
-        "__DOG5__",
-        "__DOG6__",
-        "__DOG7__",
-    ]
+enum SceneBase64 {
+    static let data: String = "__SCENE__"
 }
 
 // MARK: - 主题色
@@ -85,137 +38,75 @@ enum DogFramesBase64 {
 enum ShinColor {
     static let yellow = Color(red: 1.00, green: 0.82, blue: 0.24)
     static let red = Color(red: 0.90, green: 0.19, blue: 0.15)
-}
-
-// MARK: - 步态参数
-
-/// 把主 App 推送的 frame 换算成「该显示哪一帧姿态」以及身体的起伏与摇摆。
-///
-/// Live Activity 视图不能自播放动画，只能靠主 App 定时推新的 contentState 驱动。
-/// 走路的样子来自两件事：腿部姿态逐帧变化（脚抬起、迈出去）＋ 身体随步伐上下起伏。
-@available(iOS 16.1, *)
-struct Gait {
-    /// 该显示的步态帧下标
-    let index: Int
-    /// 身体起伏（pt）
-    let bob: CGFloat
-    /// 身体左右轻晃（度）
-    let sway: Double
-
-    /// - Parameters:
-    ///   - swayAmp: 摇摆幅度（度）。紧凑态角色只有 25pt 高，腿摆只占几像素，
-    ///     必须靠「企鹅式左右摇摆 + 上下颠簸」把走路的感觉放大，否则看不出在走
-    ///   - bobRatio: 起伏占角色高度的比例
-    init(frame: Int, height: CGFloat, swayAmp: Double = 3.2, bobRatio: CGFloat = 0.10) {
-        let n = 8
-        let g = ((frame % n) + n) % n
-        index = g
-        // 8 帧走完一个完整步态循环，身体起伏两次（左右脚各一步）
-        let step = Double(g) / Double(n) * 2 * Double.pi
-        let rise = abs(sin(step * 2))
-        bob = CGFloat(rise) * max(1.4, height * bobRatio)
-        sway = sin(step * 2) * swayAmp
-    }
-}
-
-/// 整幅场景在横向轨道上往返走动（展开态 / 锁屏用）。
-@available(iOS 16.1, *)
-struct TrackState {
-    let dx: CGFloat
-    let mirrored: Bool
-
-    init(frame: Int, travel: CGFloat) {
-        let cycle = 16
-        let p = ((frame % cycle) + cycle) % cycle
-        let f = Double(p) / Double(cycle)
-        // 前半个周期往右走，后半个周期转身往左走
-        let forward = f < 0.5
-        let t = forward ? f * 2 : (1 - f) * 2
-        dx = CGFloat((t - 0.5) * 2) * travel
-        mirrored = !forward
-    }
+    /// 红心：比纯红更亮一点，在黑色灵动岛上更醒目
+    static let heart = Color(red: 1.00, green: 0.24, blue: 0.36)
 }
 
 // MARK: - 视图
 
-/// 单人原地迈步：紧凑态用。
-///
-/// 胶囊两侧只有十几 pt，没有横移空间，所以这里不做位移 ——
-/// 靠腿部姿态逐帧切换 + 明显上下起伏来表达「在走」。
+/// 静态「小新牵小白」，只按高度等比缩放，不参与任何动画。
 @available(iOS 16.1, *)
-struct SingleWalkView: View {
-    var frames: [UIImage?]
-    var aspect: CGFloat
-    var frame: Int
+struct ShinchanSceneView: View {
     var height: CGFloat
-    /// 横向行程：角色在自己这一侧的槽位里左右往返走
-    var travel: CGFloat = 0
 
-    private var gait: Gait {
-        Gait(frame: frame, height: height, swayAmp: 6.5, bobRatio: 0.12)
-    }
-
-    private var track: TrackState { TrackState(frame: frame, travel: travel) }
-    private var imageWidth: CGFloat { height * aspect }
+    private var width: CGFloat { height * SignInArt.sceneAspect }
 
     var body: some View {
-        content
-            .frame(width: imageWidth + travel * 2 + 2, height: height + 8)
-    }
-
-    private var content: some View {
         Group {
-            if let img = SignInArt.image(frames, gait.index) {
+            if let img = SignInArt.scene {
                 Image(uiImage: img)
                     .resizable()
                     .scaledToFit()
-                    .frame(height: height)
-                    .scaleEffect(x: track.mirrored ? -1 : 1, y: 1, anchor: .center)
-                    .rotationEffect(.degrees(track.mirrored ? -gait.sway : gait.sway), anchor: .bottom)
-                    .offset(x: track.dx, y: -gait.bob)
+                    .frame(width: width, height: height)
             } else {
-                Color.clear.frame(height: height)
+                Color.clear.frame(width: width, height: height)
             }
         }
+        .frame(width: width, height: height)
     }
 }
 
-/// 小新牵小白的整幅场景，在轨道上往返走动：展开态 / 锁屏用。
+/// 跳动的红心。
 ///
-/// 容器宽度必须大于图片宽度（= 图宽 + 2 × 行程），否则 `.offset` 一移动就被裁。
+/// Live Activity 的视图不能自己播放动画（系统只做快照渲染），
+/// 所以由主 App 每 0.4 秒推一帧 frame：正常 → 胀大 → 回落 → 微缩，
+/// 1.6 秒一次，看起来是在「扑通扑通」跳。
 @available(iOS 16.1, *)
-struct WalkSceneView: View {
+struct BeatingHeartView: View {
     var frame: Int
-    var height: CGFloat
-    var travel: CGFloat
+    var size: CGFloat
 
-    private var gait: Gait { Gait(frame: frame, height: height) }
-    private var track: TrackState { TrackState(frame: frame, travel: travel) }
-    private var imageWidth: CGFloat { height * SignInArt.sceneAspect }
+    private var phase: Int { ((frame % 4) + 4) % 4 }
+
+    private var scale: CGFloat {
+        switch phase {
+        case 0: return 1.00
+        case 1: return 1.26
+        case 2: return 1.08
+        default: return 0.94
+        }
+    }
+
+    /// 光晕强度跟着跳动走，放大时更亮
+    private var glow: Double {
+        switch phase {
+        case 1: return 0.80
+        case 2: return 0.45
+        default: return 0.20
+        }
+    }
 
     var body: some View {
-        content
-            .frame(width: imageWidth + travel * 2, height: height + 6)
-    }
-
-    private var content: some View {
-        Group {
-            if let img = SignInArt.image(SignInArt.sceneFrames, gait.index) {
-                Image(uiImage: img)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(height: height)
-                    .scaleEffect(x: track.mirrored ? -1 : 1, y: 1, anchor: .center)
-                    .rotationEffect(.degrees(track.mirrored ? -gait.sway : gait.sway), anchor: .bottom)
-                    .offset(x: track.dx, y: -gait.bob)
-            } else {
-                Color.clear.frame(height: height)
-            }
-        }
+        Image(systemName: "heart.fill")
+            .font(.system(size: size, weight: .bold))
+            .foregroundColor(ShinColor.heart)
+            .shadow(color: ShinColor.heart.opacity(glow), radius: 3.5)
+            .scaleEffect(scale)
+            .frame(width: size * 1.35, height: size * 1.35)
     }
 }
 
-// MARK: - 锁屏 / 展开卡片
+// MARK: - 锁屏 / 展开卡片（静态）
 
 @available(iOS 16.1, *)
 struct PetLockScreenView: View {
@@ -228,8 +119,8 @@ struct PetLockScreenView: View {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 6) {
-            WalkSceneView(frame: state.frame, height: 44, travel: 30)
+        HStack(alignment: .center, spacing: 8) {
+            ShinchanSceneView(height: 46)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(SignInActivityKeys.slogan)
@@ -292,19 +183,18 @@ struct SignInActivityWidget: Widget {
 
     /// 灵动岛内容。单独写成普通函数，避免 @ViewBuilder 里出现 `let` / `return`。
     ///
-    /// 紧凑态：中间那段约 125pt 是硬件开孔（前摄与传感器），iOS 不允许在上面绘制，
-    /// 所以只能左右各摆一个角色。两个都在原地迈步，整条胶囊都在动。
+    /// 布局：左边静态「小新牵小白」，右边一颗跳动的红心。
     private func island(frame: Int) -> DynamicIsland {
         DynamicIsland {
-            // 展开态：宽度足够，整幅「小新牵小白」在整行上来回走
+            // 展开态：左边场景放大，右边心跳
             DynamicIslandExpandedRegion(.leading) {
-                WalkSceneView(frame: frame, height: 38, travel: 68)
+                ShinchanSceneView(height: 38)
+                    .padding(.leading, 2)
             }
 
             DynamicIslandExpandedRegion(.trailing) {
-                Image(systemName: "pawprint.fill")
-                    .font(.system(size: 13))
-                    .foregroundColor(ShinColor.yellow.opacity(0.85))
+                BeatingHeartView(frame: frame, size: 20)
+                    .padding(.trailing, 2)
             }
 
             DynamicIslandExpandedRegion(.bottom) {
@@ -320,31 +210,17 @@ struct SignInActivityWidget: Widget {
                 }
             }
         } compactLeading: {
-            SingleWalkView(
-                frames: SignInArt.shinFrames,
-                aspect: SignInArt.shinAspect,
-                frame: frame,
-                height: 25,
-                travel: 14
-            )
+            // 紧凑态左侧：小新牵小白的静态场景
+            ShinchanSceneView(height: 21)
         } compactTrailing: {
-            SingleWalkView(
-                frames: SignInArt.dogFrames,
-                aspect: SignInArt.dogAspect,
-                frame: frame,
-                height: 14,
-                travel: 10
-            )
+            // 紧凑态右侧：跳动红心
+            BeatingHeartView(frame: frame, size: 16)
         } minimal: {
-            SingleWalkView(
-                frames: SignInArt.shinFrames,
-                aspect: SignInArt.shinAspect,
-                frame: frame,
-                height: 17
-            )
+            // 极简态（多个活动同时存在时）：只留场景，尺寸给到能看清
+            ShinchanSceneView(height: 13)
         }
         .widgetURL(URL(string: SignInActivityKeys.openURL))
-        .keylineTint(ShinColor.yellow)
+        .keylineTint(ShinColor.heart)
     }
 }
 

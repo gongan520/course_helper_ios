@@ -1,6 +1,6 @@
 {
-  "version": "1.4.2",
-  "release_notes": "1. 紧凑态：小新在左侧可绘制区来回走，小白在右侧可绘制区来回走\n2. 走路动作：8 帧腿部姿态 + 身体摇摆起伏，看得出在迈步\n3. 展开态：小新牵小白横跨整个展开的灵动岛来回走\n4. 锁屏卡片显示托管/定时/手动/AI 答题账号数",
-  "ipa_url": "https://github.com/gongan520/course_helper_ios/releases/download/v1.4.2/CourseHelper_1.4.2_unsigned.ipa",
+  "version": "1.4.3",
+  "release_notes": "1. 灵动岛左边固定显示「蜡笔小新牵着小白」，静态不动的插画\n2. 灵动岛右边加了一颗红色爱心，会扑通扑通跳\n3. 锁屏卡片也改成静态的小新牵小白，不再有走动动画\n4. 锁屏卡片保留托管/定时/手动/AI 答题账号数",
+  "ipa_url": "https://github.com/gongan520/course_helper_ios/releases/download/v1.4.3/CourseHelper_1.4.3_unsigned.ipa",
   "page_url": "https://github.com/gongan520/course_helper_ios/releases/latest"
 }
