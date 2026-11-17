@@ -1,6 +1,6 @@
 {
-  "version": "1.3.9",
-  "release_notes": "1. 灵动岛：小新牵小白连在一起、整体从左走到右再转身走回左边\n2. 走动更自然：0.4 秒一帧，带步伐起伏与身体轻晃\n3. 修复灵动岛不显示（图片渲染 + 清理旧活动残留 + 自动重建）\n4. 锁屏卡片显示托管/定时/手动/AI 答题账号数",
-  "ipa_url": "https://github.com/gongan520/course_helper_ios/releases/download/v1.3.9/CourseHelper_1.3.9_unsigned.ipa",
+  "version": "1.4.0",
+  "release_notes": "1. 灵动岛改成真正的「迈步走动」：8 帧腿部姿态循环，脚会抬起迈出去，不再是一张图平移\n2. 修正位移被裁切的问题，现在能走满整个可用区域并转身往回走\n3. 走路带上下起伏与身体轻晃，看起来更自然\n4. 小白四条腿交替迈步、尾巴同步摇摆\n5. 锁屏卡片显示托管/定时/手动/AI 答题账号数",
+  "ipa_url": "https://github.com/gongan520/course_helper_ios/releases/download/v1.4.0/CourseHelper_1.4.0_unsigned.ipa",
   "page_url": "https://github.com/gongan520/course_helper_ios/releases/latest"
 }

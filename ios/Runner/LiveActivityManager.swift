@@ -232,7 +232,7 @@ final class LiveActivityManager {
     /// 再快（<0.25s）会被系统合并更新反而卡顿，也更耗电。
     private func startTicker() {
         guard frameTimer == nil else { return }
-        let timer = Timer(timeInterval: 0.4, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 0.3, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             guard let target = self.activity else {
                 self.stopTicker()
@@ -246,7 +246,8 @@ final class LiveActivityManager {
                 return
             }
             guard !self.updating else { return }
-            self.frameIndex = (self.frameIndex + 1) % 24
+            // 48 是步态周期(8)与位移周期(16)的公倍数，归零时动作不会跳帧
+            self.frameIndex = (self.frameIndex + 1) % 48
             var state = self.latest
             state.frame = self.frameIndex
             self.push(state: state, to: target)

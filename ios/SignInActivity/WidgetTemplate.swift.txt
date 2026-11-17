@@ -1,0 +1,312 @@
+import ActivityKit
+import WidgetKit
+import SwiftUI
+import Foundation
+import UIKit
+
+// MARK: - 内嵌插画素材
+//
+// 角色取自动画片原画面，抠掉草地背景后按「迈步姿态」生成 8 帧，base64 内嵌。
+// Widget Extension 加图片资源要在 Xcode 工程里手工配 build phase，容易漏打包，
+// 所以直接内嵌源码里。每帧量化后只有 3.5KB，解码开销可以忽略。
+
+@available(iOS 16.1, *)
+enum SignInArt {
+    /// 8 帧走路循环（腿绕髋关节摆动，脚走弧线）
+    static let walkFrames: [UIImage?] = WalkFramesBase64.list.map { decode($0) }
+    static let shin: UIImage? = decode(SingleBase64.shin)
+    static let dog: UIImage? = decode(SingleBase64.dog)
+
+    /// 单帧宽高比（219 x 132）
+    static let sceneAspect: CGFloat = 219.0 / 132.0
+
+    /// 兜底：任一帧解码失败时退到第 0 帧，避免整块空白
+    static func frameImage(_ index: Int) -> UIImage? {
+        let count = walkFrames.count
+        guard count > 0 else { return nil }
+        let i = ((index % count) + count) % count
+        return walkFrames[i] ?? walkFrames[0]
+    }
+
+    private static func decode(_ s: String) -> UIImage? {
+        guard let data = Data(base64Encoded: s, options: .ignoreUnknownCharacters) else {
+            return nil
+        }
+        return UIImage(data: data)
+    }
+}
+
+enum WalkFramesBase64 {
+    static let list: [String] = [
+        "__WALK0__",
+        "__WALK1__",
+        "__WALK2__",
+        "__WALK3__",
+        "__WALK4__",
+        "__WALK5__",
+        "__WALK6__",
+        "__WALK7__",
+    ]
+}
+
+enum SingleBase64 {
+    static let shin = "__SHIN_B64__"
+    static let dog = "__DOG_B64__"
+}
+
+// MARK: - 主题色
+
+@available(iOS 16.1, *)
+enum ShinColor {
+    static let yellow = Color(red: 1.00, green: 0.82, blue: 0.24)
+    static let red = Color(red: 0.90, green: 0.19, blue: 0.15)
+}
+
+// MARK: - 走动参数
+
+/// 「从左走到右，转身走回左」的位移、朝向与步态。
+///
+/// Live Activity 的视图不支持持续动画，只能由主 App 定时推送新的 `frame` 驱动：
+/// - 步态：8 帧一个循环，每帧是预先做好的腿部姿态（脚真的抬起来、迈出去）
+/// - 位移：16 帧一个往返，走到头水平翻转表现「转身」
+@available(iOS 16.1, *)
+struct WalkState {
+    /// 当前该显示的步态帧下标
+    let frameIndex: Int
+    /// 水平位移（pt）
+    let dx: CGFloat
+    /// 是否水平镜像（转身往回走）
+    let mirrored: Bool
+    /// 身体上下起伏（pt）
+    let bob: CGFloat
+    /// 身体左右轻晃（度）
+    let sway: Double
+
+    init(frame: Int, travel: CGFloat, height: CGFloat) {
+        // 步态：8 帧一个完整循环
+        let gaitCount = 8
+        let g = ((frame % gaitCount) + gaitCount) % gaitCount
+        frameIndex = g
+
+        // 位移：16 帧一个往返
+        let cycle = 16
+        let pos = ((frame % cycle) + cycle) % cycle
+        let f = Double(pos) / Double(cycle)
+        let forward = f < 0.5
+        let t = forward ? f * 2 : (1 - f) * 2          // 0 → 1 → 0
+        dx = CGFloat((t - 0.5) * 2) * travel
+        mirrored = !forward
+
+        // 每迈一步身体起伏一次：8 帧里起伏两回
+        let step = Double(g) / Double(gaitCount) * 2 * Double.pi
+        let rise = abs(sin(step * 2))
+        bob = CGFloat(rise) * max(1.4, height * 0.11)
+        sway = sin(step * 2) * 3.6
+    }
+}
+
+// MARK: - 插画视图
+
+/// 小新牵小白的走动场景。节奏由 frame 驱动。
+///
+/// 注意：容器宽度必须大于图片宽度（= 图宽 + 2 × 行程），否则 `.offset`
+/// 一移动就被父容器裁掉，看起来只剩原地抖动。
+@available(iOS 16.1, *)
+struct WalkSceneView: View {
+    var frame: Int
+    var height: CGFloat
+    var travel: CGFloat
+
+    private var walk: WalkState { WalkState(frame: frame, travel: travel, height: height) }
+
+    /// 图片按高度铺开后的宽度
+    private var imageWidth: CGFloat { height * SignInArt.sceneAspect }
+
+    var body: some View {
+        content
+            .frame(width: imageWidth + travel * 2, height: height + 6)
+    }
+
+    private var content: some View {
+        Group {
+            if let img = SignInArt.frameImage(walk.frameIndex) {
+                Image(uiImage: img)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(height: height)
+                    .scaleEffect(x: walk.mirrored ? -1 : 1, y: 1, anchor: .center)
+                    .rotationEffect(.degrees(walk.mirrored ? -walk.sway : walk.sway), anchor: .bottom)
+                    .offset(x: walk.dx, y: -walk.bob)
+            } else {
+                Color.clear.frame(height: height)
+            }
+        }
+    }
+}
+
+/// 单个角色，用于灵动岛的极简态。
+@available(iOS 16.1, *)
+struct CharacterView: View {
+    enum Kind { case shinchan, shiro }
+
+    var kind: Kind
+    var frame: Int
+    var height: CGFloat
+
+    private var image: UIImage? {
+        kind == .shinchan ? SignInArt.shin : SignInArt.dog
+    }
+
+    /// 极简态空间极小，只做上下小幅跳动
+    private var hop: CGFloat {
+        let step = Double(((frame % 8) + 8) % 8) / 8.0 * 2 * Double.pi
+        return CGFloat(abs(sin(step * 2))) * 1.5
+    }
+
+    var body: some View {
+        Group {
+            if let img = image {
+                Image(uiImage: img)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(height: height)
+                    .offset(y: -hop)
+            } else {
+                Color.clear.frame(height: height)
+            }
+        }
+    }
+}
+
+// MARK: - 锁屏 / 展开卡片
+
+@available(iOS 16.1, *)
+struct PetLockScreenView: View {
+    let state: SignInActivityAttributes.ContentState
+
+    private var headline: String {
+        if state.statusText.contains("成功") { return "刚刚帮你签到成功啦～" }
+        if state.statusText.contains("手动") { return "有个签到要你亲自来一下" }
+        return SignInActivityKeys.slogan
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 6) {
+            WalkSceneView(frame: state.frame, height: 44, travel: 16)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(SignInActivityKeys.slogan)
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+
+                Text(headline)
+                    .font(.system(size: 11))
+                    .foregroundColor(Color.white.opacity(0.62))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+
+                HStack(spacing: 4) {
+                    pill("托管 \(state.autoCount)", tint: ShinColor.red)
+                    pill("定时 \(state.scheduledCount)", tint: ShinColor.yellow)
+                    pill("手动 \(state.manualCount)", tint: Color.white.opacity(0.45))
+                    pill("AI \(state.aiCount)", tint: Color(red: 0.35, green: 0.78, blue: 0.98))
+                }
+            }
+            .layoutPriority(1)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+    }
+
+    private func pill(_ text: String, tint: Color) -> some View {
+        HStack(spacing: 3) {
+            Circle().fill(tint).frame(width: 4, height: 4)
+            Text(text)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(Color.white.opacity(0.9))
+                .lineLimit(1)
+                .fixedSize()
+        }
+        .padding(.horizontal, 5)
+        .padding(.vertical, 2.5)
+        .background(Capsule().fill(Color.white.opacity(0.13)))
+    }
+}
+
+// MARK: - Widget
+
+@available(iOS 16.1, *)
+struct SignInActivityWidget: Widget {
+    var body: some WidgetConfiguration {
+        ActivityConfiguration(for: SignInActivityAttributes.self) { context in
+            PetLockScreenView(state: context.state)
+                .activityBackgroundTint(Color.black)
+                .activitySystemActionForegroundColor(Color.white)
+                .widgetURL(URL(string: SignInActivityKeys.openURL))
+
+        } dynamicIsland: { context in
+            island(frame: context.state.frame)
+        }
+    }
+
+    /// 灵动岛内容。单独写成普通函数，避免 @ViewBuilder 里出现 `let` / `return`。
+    private func island(frame: Int) -> DynamicIsland {
+        DynamicIsland {
+            // 展开态：整行宽度内来回走动
+            DynamicIslandExpandedRegion(.leading) {
+                WalkSceneView(frame: frame, height: 40, travel: 30)
+            }
+
+            DynamicIslandExpandedRegion(.trailing) {
+                Image(systemName: "pawprint.fill")
+                    .font(.system(size: 13))
+                    .foregroundColor(ShinColor.yellow.opacity(0.85))
+            }
+
+            DynamicIslandExpandedRegion(.bottom) {
+                HStack(spacing: 6) {
+                    Text(SignInActivityKeys.slogan)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(Color.white.opacity(0.92))
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    Text("轻点回到 App")
+                        .font(.system(size: 10))
+                        .foregroundColor(ShinColor.yellow.opacity(0.9))
+                }
+            }
+        } compactLeading: {
+            // 紧凑态：胶囊两侧各只有约 12pt，尺寸必须保守，否则整幅会被压缩裁切
+            WalkSceneView(frame: frame, height: 24, travel: 9)
+        } compactTrailing: {
+            Image(systemName: "pawprint.fill")
+                .font(.system(size: 10))
+                .foregroundColor(ShinColor.yellow.opacity(0.8))
+        } minimal: {
+            CharacterView(kind: .shinchan, frame: frame, height: 18)
+        }
+        .widgetURL(URL(string: SignInActivityKeys.openURL))
+        .keylineTint(ShinColor.yellow)
+    }
+}
+
+/// Extension 侧兜底读取 App Group 数据（活动状态异常时用于降级展示）。
+@available(iOS 16.1, *)
+func readSharedState() -> SignInActivityAttributes.ContentState {
+    let defaults = UserDefaults(suiteName: SignInActivityKeys.appGroup)
+    return SignInActivityAttributes.ContentState(
+        statusText: defaults?.string(forKey: "live_status_text") ?? SignInActivityKeys.slogan,
+        signedAccounts: defaults?.string(forKey: "live_signed_accounts") ?? "",
+        autoCount: defaults?.integer(forKey: "live_auto_count") ?? 0,
+        scheduledCount: defaults?.integer(forKey: "live_scheduled_count") ?? 0,
+        manualCount: defaults?.integer(forKey: "live_manual_count") ?? 0,
+        aiCount: defaults?.integer(forKey: "live_ai_count") ?? 0,
+        mood: defaults?.string(forKey: "live_mood") ?? "idle",
+        signedCount: defaults?.integer(forKey: "live_signed_count") ?? 0,
+        frame: defaults?.integer(forKey: "live_frame") ?? 0
+    )
+}
