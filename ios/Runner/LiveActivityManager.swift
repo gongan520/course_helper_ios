@@ -226,12 +226,13 @@ final class LiveActivityManager {
 
     /// 启动帧定时器：不断更新 frame，驱动「小新牵小白来回走」的画面。
     ///
-    /// Live Activity 的视图不支持持续动画，只能通过更新 contentState 驱动：
-    /// 24 帧为一个完整往返（单程 12 帧，约 12 秒）。
-    /// 频率不能太高，否则会被系统限流（表现为活动被结束、灵动岛消失）。
+    /// Live Activity 的视图不支持持续动画，只能靠不断更新 contentState 出帧，
+    /// 所以帧率直接决定动画是否「自然」：
+    /// 0.4 秒一帧时每帧位移约 0.5pt，看起来是连续迈步；
+    /// 再快（<0.25s）会被系统合并更新反而卡顿，也更耗电。
     private func startTicker() {
         guard frameTimer == nil else { return }
-        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 0.4, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             guard let target = self.activity else {
                 self.stopTicker()

@@ -95,6 +95,8 @@ struct WalkState {
     let mirrored: Bool
     /// 步伐起伏（pt）
     let bob: CGFloat
+    /// 身体轻微摇摆（度）——走路时重心左右交替
+    let tilt: Double
 
     init(frame: Int, travel: CGFloat) {
         let cycle = 24.0
@@ -105,8 +107,10 @@ struct WalkState {
         dx = CGFloat((t - 0.5) * 2) * travel
         mirrored = !forward
 
-        let step = Double(((frame % 8) + 8) % 8) / 8.0 * 2 * Double.pi
-        bob = CGFloat(abs(sin(step))) * 1.4
+        // 一个步幅 6 帧：抬脚最高点在中间（配 0.4s/帧约 1.2 秒一步，接近散步节奏）
+        let step = Double(((frame % 6) + 6) % 6) / 6.0 * 2 * Double.pi
+        bob = CGFloat(abs(sin(step))) * 1.1
+        tilt = sin(step) * 1.6
     }
 }
 
@@ -139,6 +143,7 @@ struct WalkSceneView: View {
         }
         .frame(height: height)
         .scaleEffect(x: w.mirrored ? -1 : 1, y: 1, anchor: .center)
+        .rotationEffect(.degrees(w.mirrored ? -w.tilt : w.tilt), anchor: .bottom)
         .offset(x: w.dx, y: -w.bob)
     }
 }
@@ -177,6 +182,7 @@ struct CharacterView: View {
         }
         .frame(height: height)
         .scaleEffect(x: w.mirrored ? -1 : 1, y: 1, anchor: .center)
+        .rotationEffect(.degrees(w.mirrored ? -w.tilt : w.tilt), anchor: .bottom)
         .offset(x: w.dx, y: -w.bob)
     }
 }
@@ -260,16 +266,15 @@ struct SignInActivityWidget: Widget {
     /// 灵动岛内容。单独写成普通函数，避免 @ViewBuilder 里出现 `let` / `return`。
     private func island(frame: Int) -> DynamicIsland {
         DynamicIsland {
-            // 展开：左侧小新
+            // 展开：整幅「小新牵小白」放在同一侧，保持两者连着
             DynamicIslandExpandedRegion(.leading) {
-                CharacterView(kind: .shinchan, frame: frame, height: 30, travel: 3)
+                WalkSceneView(frame: frame, height: 34, travel: 11)
                     .padding(.leading, 2)
             }
 
-            // 展开：右侧小白
+            // 展开：右侧不再放角色（避免被拉到两端断开），只留极窄占位
             DynamicIslandExpandedRegion(.trailing) {
-                CharacterView(kind: .shiro, frame: frame, height: 16, travel: 3)
-                    .padding(.trailing, 2)
+                Color.clear.frame(width: 1, height: 1)
             }
 
             // 展开：底部标语
@@ -286,9 +291,11 @@ struct SignInActivityWidget: Widget {
                 }
             }
         } compactLeading: {
-            CharacterView(kind: .shinchan, frame: frame, height: 21, travel: 3)
+            // 紧凑态：整幅场景一起左右走，而不是分居两端
+            WalkSceneView(frame: frame, height: 22, travel: 7)
         } compactTrailing: {
-            CharacterView(kind: .shiro, frame: frame, height: 15, travel: 2)
+            // 只留一个几乎不占位的点，让场景能吃满左侧空间
+            Color.clear.frame(width: 1, height: 1)
         } minimal: {
             CharacterView(kind: .shinchan, frame: frame, height: 18, travel: 2)
         }

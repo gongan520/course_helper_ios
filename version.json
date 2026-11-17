@@ -1,6 +1,6 @@
 {
-  "version": "1.3.8",
-  "release_notes": "1. 灵动岛改为「蜡笔小新牵小白」真实插画，从左走到右、再转身走回左边\n2. 修复灵动岛完全不显示的问题（改用图片渲染 + 清理旧活动残留 + 活动被系统回收后自动重建）\n3. 锁屏卡片显示托管/定时/手动/AI 答题各几个账号\n4. 点击灵动岛可直接回到 App",
-  "ipa_url": "https://github.com/gongan520/course_helper_ios/releases/download/v1.3.8/CourseHelper_1.3.8_unsigned.ipa",
+  "version": "1.3.9",
+  "release_notes": "1. 灵动岛：小新牵小白连在一起、整体从左走到右再转身走回左边\n2. 走动更自然：0.4 秒一帧，带步伐起伏与身体轻晃\n3. 修复灵动岛不显示（图片渲染 + 清理旧活动残留 + 自动重建）\n4. 锁屏卡片显示托管/定时/手动/AI 答题账号数",
+  "ipa_url": "https://github.com/gongan520/course_helper_ios/releases/download/v1.3.9/CourseHelper_1.3.9_unsigned.ipa",
   "page_url": "https://github.com/gongan520/course_helper_ios/releases/latest"
 }
