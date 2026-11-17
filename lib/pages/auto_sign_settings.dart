@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models/user.dart';
 import '../service/ai_answer.dart';
+import '../service/auto_answer.dart';
 import '../service/auto_sign.dart';
 import '../service/live_activity.dart';
 import '../service/sign_history.dart';
@@ -852,6 +853,12 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
               '接入 DeepSeek 等 OpenAI 兼容 AI，用于考试/作业自动生成答案。',
               style: TextStyle(fontSize: 12, color: scheme.outline, height: 1.5),
             ),
+            const SizedBox(height: 4),
+            Text(
+              '开启 AI 答题的账号会在后台各自跟自己的课：不打开课堂页也会自动答题并提交。\n'
+              '仅雨课堂支持后台跟课；学习通需打开课堂页后自动答题。',
+              style: TextStyle(fontSize: 12, color: scheme.outline, height: 1.5),
+            ),
             const SizedBox(height: 12),
             TextFormField(
               controller: _aiApiKeyController,
@@ -896,6 +903,13 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
               icon: const Icon(Icons.save_outlined),
               label: const Text('保存 AI 配置'),
             ),
+            const SizedBox(height: 8),
+            Text(
+              AutoAnswerEngine().sessionCount > 0
+                  ? '后台正在跟 ${AutoAnswerEngine().sessionCount} 节课'
+                  : '后台暂未检测到正在进行的课堂',
+              style: TextStyle(fontSize: 12, color: scheme.outline),
+            ),
           ],
         ),
       ),
@@ -909,6 +923,8 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
       model: _aiModelController.text.trim(),
     );
     await AiAnswerService().updateConfig(cfg);
+    // 首次填好密钥后让后台答题引擎真正启动（已运行则忽略）
+    AutoAnswerEngine().start();
     if (mounted) {
       setState(() {});
       ScaffoldMessenger.of(context).showSnackBar(

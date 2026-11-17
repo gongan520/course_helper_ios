@@ -19,6 +19,7 @@ import '../session/account.dart';
 import '../platform.dart';
 import '../push/notification.dart';
 import '../service/ai_answer.dart';
+import '../service/auto_answer.dart';
 import '../service/auto_sign.dart';
 import '../utils/logger.dart';
 import '../utils/storage.dart';
@@ -106,12 +107,23 @@ class _PresentationPageState extends State<PresentationPage> {
   @override
   void initState() {
     super.initState();
+    // 页面接管这节课：让后台答题引擎让出，避免同一账号建两条课堂连接
+    final uid = AccountManager.currentUser?.uid;
+    if (uid != null) {
+      AutoAnswerEngine().pauseSession(uid, widget.lessonId);
+    }
     _initialize();
     _startForegroundService();
   }
 
   @override
   void dispose() {
+    // 页面关闭：把这节课交还后台答题引擎继续跟
+    final uid = AccountManager.currentUser?.uid;
+    if (uid != null) {
+      AutoAnswerEngine().resumeSession(uid, widget.lessonId);
+    }
+
     // 发送离开课堂消息
     if (_ws != null) {
       final leaveData = {
@@ -1540,6 +1552,13 @@ class _PresentationPageState extends State<PresentationPage> {
     final currentUid = AccountManager.currentUser?.uid;
     if (currentUid != null && !AiAnswerService().isEnabledFor(currentUid)) return;
 
+    // 后台引擎已经答过这道题就不再重复提交
+    if (currentUid != null &&
+        problemId != null &&
+        AutoAnswerEngine().hasAnswered(currentUid, problemId)) {
+      return;
+    }
+
     // 防止重复触发（同一题只自动答一次）
     if (problemId != null) {
       if (_autoAnsweredProblemIds.contains(problemId)) return;
@@ -1824,6 +1843,8 @@ class _PresentationPageState extends State<PresentationPage> {
       
       if (result != null && result['code'] == 0) {
         successCount++;
+        // 同步给后台引擎，避免它对同一账号重复提交同一题
+        AutoAnswerEngine().markAnswered(user.uid, problemId);
       } else {
         failedAccounts.add('${user.name}: ${result?["msg"] ?? "提交失败"}');
       }

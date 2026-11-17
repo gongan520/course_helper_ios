@@ -382,6 +382,13 @@ class AutoSignService {
     }
   }
 
+  /// 当前应参与自动化（自动签到 / 后台自动答题）的账号：
+  /// 托管模式 + 定时模式（且已落在设定时间段内）。
+  ///
+  /// 供 [AutoAnswerEngine] 等其它自动服务复用，避免各自重复实现筛选逻辑。
+  List<User> get activeAccountsForAutomation =>
+      _accountsForPoll(scheduledOnly: false);
+
   /// 筛选出指定模式下需要处理的账号
   List<User> _accountsFor(AutoSignMode mode) {
     return AccountManager.allAccounts.where((u) {

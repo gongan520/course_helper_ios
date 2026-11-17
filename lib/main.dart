@@ -19,6 +19,7 @@ import 'push/easemob.dart';
 import 'push/notification.dart';
 import 'push/update.dart';
 import './service/auto_sign.dart';
+import './service/auto_answer.dart';
 import './service/background_keepalive.dart';
 import './service/live_activity.dart';
 
@@ -65,6 +66,9 @@ void main() async {
   await EasemobIM().initialize();
 
   await AutoSignService().initialize();
+
+  // 启动后台多课堂自动答题（每个账号各自跟自己的课，不依赖打开课堂页）
+  AutoAnswerEngine().start();
 
   // 启动后台定位保活（仅 iOS 生效，保证签到轮询与 WebSocket 后台不冻结）
   await BackgroundKeepAlive().start();
