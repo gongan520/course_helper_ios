@@ -16,6 +16,7 @@ import '../utils/logger.dart';
 import '../utils/storage.dart';
 import '../platform.dart';
 import 'live_activity.dart';
+import 'ai_answer.dart';
 import 'sign_history.dart';
 
 /// 单个账号的签到模式
@@ -276,8 +277,8 @@ class AutoSignService {
         if (_pollTimer == null) return; // 期间被关闭
         _rollLiveCountIfNeeded();
         LiveActivity().show(
-          statusText: '正在后台陪着你',
-          hostingCount: _liveHostingCount,
+          statusText: '蜡笔小新正在守护你的课堂',
+          stats: _liveStats,
           mood: PetMood.idle,
           signedCount: _liveSignedCount,
           signedAccounts: _liveLastAccounts,
@@ -286,11 +287,56 @@ class AutoSignService {
     }
   }
 
-  /// 当前处于托管/定时模式的账号数量（用于灵动岛展示）。
-  int get _liveHostingCount => _config.accountModes.values
-      .where((v) =>
-          v == AutoSignMode.auto.name || v == AutoSignMode.scheduled.name)
-      .length;
+  /// 供设置页 / 灵动岛展示用的账号统计（公开只读）。
+  LiveActivityStats get liveStats => _liveStats;
+
+  /// 灵动岛/锁屏卡片需要的账号统计：
+  /// 托管、定时、手动各几个账号，以及开了 AI 答题的有几个。
+  LiveActivityStats get _liveStats {
+    var auto = 0;
+    var scheduled = 0;
+    var manual = 0;
+    var ai = 0;
+
+    final aiEnabled = AiAnswerService().enabledAccounts;
+    final accounts = AccountManager.allAccounts;
+
+    for (final user in accounts) {
+      switch (_config.modeOf(user.uid)) {
+        case AutoSignMode.auto:
+          auto += 1;
+          break;
+        case AutoSignMode.scheduled:
+          scheduled += 1;
+          break;
+        case AutoSignMode.manual:
+          manual += 1;
+          break;
+      }
+      if (aiEnabled[user.uid] == true) ai += 1;
+    }
+
+    // 极端情况（未登录 / 账号被移除）下退回按配置统计，避免全 0
+    if (accounts.isEmpty) {
+      auto = _config.accountModes.values
+          .where((v) => v == AutoSignMode.auto.name)
+          .length;
+      scheduled = _config.accountModes.values
+          .where((v) => v == AutoSignMode.scheduled.name)
+          .length;
+      manual = _config.accountModes.values
+          .where((v) => v == AutoSignMode.manual.name)
+          .length;
+      ai = aiEnabled.values.where((v) => v).length;
+    }
+
+    return LiveActivityStats(
+      autoCount: auto,
+      scheduledCount: scheduled,
+      manualCount: manual,
+      aiCount: ai,
+    );
+  }
 
   /// 跨天时重置当日计数。
   void _rollLiveCountIfNeeded() {
@@ -315,8 +361,10 @@ class AutoSignService {
       return;
     }
     await LiveActivity().show(
-      statusText: _liveMood == PetMood.happy ? '刚刚签到成功' : '正在后台陪着你',
-      hostingCount: _liveHostingCount,
+      statusText: _liveMood == PetMood.happy
+          ? '刚帮你签到成功啦'
+          : '蜡笔小新正在守护你的课堂',
+      stats: _liveStats,
       mood: _liveMood,
       signedCount: _liveSignedCount,
       signedAccounts: _liveLastAccounts,
@@ -945,21 +993,21 @@ class AutoSignService {
         if (account.isNotEmpty) _liveLastAccounts = account;
 
         LiveActivity().update(
-          statusText: '刚刚签到成功',
+          statusText: '刚帮你签到成功啦',
           signedAccounts: _liveLastAccounts,
-          hostingCount: _liveHostingCount,
+          stats: _liveStats,
           mood: PetMood.happy,
           signedCount: _liveSignedCount,
         );
 
-        // 60 秒后宠物恢复平常心情
+        // 60 秒后恢复平常心情
         _liveMoodTimer?.cancel();
         _liveMoodTimer = Timer(const Duration(seconds: 60), () {
           _liveMood = PetMood.idle;
           LiveActivity().update(
-            statusText: '正在后台陪着你',
+            statusText: '蜡笔小新正在守护你的课堂',
             signedAccounts: _liveLastAccounts,
-            hostingCount: _liveHostingCount,
+            stats: _liveStats,
             mood: PetMood.idle,
             signedCount: _liveSignedCount,
           );
@@ -968,7 +1016,7 @@ class AutoSignService {
         LiveActivity().update(
           statusText: '有个签到你得亲自来',
           signedAccounts: _liveLastAccounts,
-          hostingCount: _liveHostingCount,
+          stats: _liveStats,
           mood: PetMood.busy,
           signedCount: _liveSignedCount,
         );

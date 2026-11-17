@@ -67,7 +67,12 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
     if (st == null) return '灵动岛状态：未检测';
     if (st['systemEnabled'] != true) return '灵动岛状态：系统未允许「实时活动」';
     final count = st['activityCount'];
-    if (count is int && count > 0) return '灵动岛状态：已创建 $count 个活动';
+    if (count is int && count > 0) {
+      if (st['animating'] == true) {
+        return '灵动岛状态：已创建 $count 个活动，小新正在遛狗';
+      }
+      return '灵动岛状态：已创建 $count 个活动';
+    }
     return '灵动岛状态：系统已允许，等托管启动';
   }
 
@@ -766,7 +771,7 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
           SwitchListTile(
             secondary: const Icon(Icons.widgets_outlined),
             title: const Text('灵动岛显示'),
-            subtitle: const Text('后台挂机时在灵动岛/锁屏养一只宠物，点击可直接回到 App'),
+            subtitle: const Text('后台挂机时蜡笔小新牵着小白在灵动岛遛弯，点击可直接回到 App'),
             value: _liveActivityEnabled,
             onChanged: (v) async {
               setState(() => _liveActivityEnabled = v);
@@ -777,12 +782,8 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
               }
               // 打开时立刻创建，方便当场确认是否生效
               final st = await LiveActivity().show(
-                statusText: '正在后台陪着你',
-                hostingCount: AutoSignService().config.accountModes.values
-                    .where((m) =>
-                        m == AutoSignMode.auto.name ||
-                        m == AutoSignMode.scheduled.name)
-                    .length,
+                statusText: '蜡笔小新正在守护你的课堂',
+                stats: AutoSignService().liveStats,
                 mood: PetMood.idle,
               );
               if (!mounted) return;

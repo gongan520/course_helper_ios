@@ -81,9 +81,12 @@ import ActivityKit
     case "start":
       let args = call.arguments as? [String: Any] ?? [:]
       let payload = LiveActivityManager.shared.start(
-        statusText: args["statusText"] as? String ?? "正在后台托管",
+        statusText: args["statusText"] as? String ?? "蜡笔小新正在守护你的课堂",
         signedAccounts: args["signedAccounts"] as? String ?? "",
-        hostingCount: args["hostingCount"] as? Int ?? 0,
+        autoCount: args["autoCount"] as? Int ?? 0,
+        scheduledCount: args["scheduledCount"] as? Int ?? 0,
+        manualCount: args["manualCount"] as? Int ?? 0,
+        aiCount: args["aiCount"] as? Int ?? 0,
         mood: args["mood"] as? String ?? "idle",
         signedCount: args["signedCount"] as? Int ?? 0
       )
@@ -91,9 +94,12 @@ import ActivityKit
     case "update":
       let args = call.arguments as? [String: Any] ?? [:]
       let payload = LiveActivityManager.shared.update(
-        statusText: args["statusText"] as? String ?? "正在后台托管",
+        statusText: args["statusText"] as? String ?? "蜡笔小新正在守护你的课堂",
         signedAccounts: args["signedAccounts"] as? String ?? "",
-        hostingCount: args["hostingCount"] as? Int ?? 0,
+        autoCount: args["autoCount"] as? Int ?? 0,
+        scheduledCount: args["scheduledCount"] as? Int ?? 0,
+        manualCount: args["manualCount"] as? Int ?? 0,
+        aiCount: args["aiCount"] as? Int ?? 0,
         mood: args["mood"] as? String ?? "idle",
         signedCount: args["signedCount"] as? Int ?? 0
       )

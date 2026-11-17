@@ -3,13 +3,15 @@ import ActivityKit
 
 /// 主 App 侧的 Live Activity 管理器。
 ///
-/// 负责：启动 / 更新 / 结束「宠物」实时活动，并写入 App Group 共享数据。
+/// 负责：启动 / 更新 / 结束「蜡笔小新」实时活动，并写入 App Group 共享数据。
 ///
 /// 设计要点：
 /// 1. 支持 iOS 16.1（旧 API 兜底）与 16.2+（ActivityContent 新 API）；
 /// 2. 冷启动会「认领」进程外残留的活动，避免重复创建 / 灵动岛不刷新；
 /// 3. 活动被系统回收或用户划走后，`update` 会自动重建；
-/// 4. 失败原因记入 `lastError`，通过 `statusPayload()` 抛给 Flutter 展示。
+/// 4. 失败原因记入 `lastError`，通过 `statusPayload()` 抛给 Flutter 展示；
+/// 5. 内置帧定时器：Live Activity 本身不支持连续动画，只能靠不断更新
+///    contentState 的 `frame` 字段来驱动「小新遛狗」的走动画面。
 @available(iOS 16.1, *)
 final class LiveActivityManager {
 
@@ -17,6 +19,18 @@ final class LiveActivityManager {
 
     private var activity: Activity<SignInActivityAttributes>?
     private var lastError: String?
+
+    /// 当前完整状态（帧定时器只需改 frame 后重新推送）
+    private var latest = SignInActivityAttributes.ContentState(statusText: "")
+
+    /// 动画帧序号
+    private var frameIndex: Int = 0
+
+    /// 动画定时器（0.8 秒一帧，8 帧走完一个步态循环）
+    private var frameTimer: Timer?
+
+    /// 上一帧是否还在写入（避免系统变慢时更新任务堆叠）
+    private var updating = false
 
     private init() {}
 
@@ -28,6 +42,7 @@ final class LiveActivityManager {
             "systemEnabled": ActivityAuthorizationInfo().areActivitiesEnabled,
             "activityCount": Activity<SignInActivityAttributes>.activities.count,
             "hasActivity": activity != nil,
+            "animating": frameTimer != nil,
             "lastError": lastError ?? "",
             "state": "none"
         ]
@@ -41,29 +56,31 @@ final class LiveActivityManager {
         return payload
     }
 
-    /// 启动（或复用）宠物实时活动。
+    /// 启动（或复用）实时活动。
     @discardableResult
     func start(
         statusText: String,
         signedAccounts: String,
-        hostingCount: Int,
+        autoCount: Int,
+        scheduledCount: Int,
+        manualCount: Int,
+        aiCount: Int,
         mood: String,
         signedCount: Int
     ) -> [String: Any] {
-        let state = makeState(
+        let state = SignInActivityAttributes.ContentState(
             statusText: statusText,
             signedAccounts: signedAccounts,
-            hostingCount: hostingCount,
+            autoCount: autoCount,
+            scheduledCount: scheduledCount,
+            manualCount: manualCount,
+            aiCount: aiCount,
             mood: mood,
-            signedCount: signedCount
+            signedCount: signedCount,
+            frame: frameIndex
         )
-        writeSharedState(
-            status: statusText,
-            accounts: signedAccounts,
-            count: hostingCount,
-            mood: mood,
-            signedCount: signedCount
-        )
+        latest = state
+        writeSharedState(state)
 
         // 系统层面关闭了「实时活动」时请求必然失败，直接给出明确原因
         guard ActivityAuthorizationInfo().areActivitiesEnabled else {
@@ -76,6 +93,7 @@ final class LiveActivityManager {
             activity = existing
             push(state: state, to: existing)
             lastError = nil
+            startTicker()
             return statusPayload()
         }
 
@@ -100,6 +118,7 @@ final class LiveActivityManager {
             }
             activity = created
             lastError = nil
+            startTicker()
         } catch {
             lastError = error.localizedDescription
             NSLog("LiveActivity 启动失败: \(error)")
@@ -112,27 +131,30 @@ final class LiveActivityManager {
     func update(
         statusText: String,
         signedAccounts: String,
-        hostingCount: Int,
+        autoCount: Int,
+        scheduledCount: Int,
+        manualCount: Int,
+        aiCount: Int,
         mood: String,
         signedCount: Int
     ) -> [String: Any] {
-        let state = makeState(
+        let state = SignInActivityAttributes.ContentState(
             statusText: statusText,
             signedAccounts: signedAccounts,
-            hostingCount: hostingCount,
+            autoCount: autoCount,
+            scheduledCount: scheduledCount,
+            manualCount: manualCount,
+            aiCount: aiCount,
             mood: mood,
-            signedCount: signedCount
+            signedCount: signedCount,
+            frame: frameIndex
         )
-        writeSharedState(
-            status: statusText,
-            accounts: signedAccounts,
-            count: hostingCount,
-            mood: mood,
-            signedCount: signedCount
-        )
+        latest = state
+        writeSharedState(state)
 
         if let current = activity, isUsable(current) {
             push(state: state, to: current)
+            startTicker()
             return statusPayload()
         }
 
@@ -140,7 +162,10 @@ final class LiveActivityManager {
         return start(
             statusText: statusText,
             signedAccounts: signedAccounts,
-            hostingCount: hostingCount,
+            autoCount: autoCount,
+            scheduledCount: scheduledCount,
+            manualCount: manualCount,
+            aiCount: aiCount,
             mood: mood,
             signedCount: signedCount
         )
@@ -148,40 +173,52 @@ final class LiveActivityManager {
 
     /// 结束并清除所有活动（用户关闭开关时调用）。
     func stop() {
-        writeSharedState(status: "已停止", accounts: "", count: 0, mood: "sleep", signedCount: 0)
+        stopTicker()
+        latest = SignInActivityAttributes.ContentState(statusText: "已停止", mood: "sleep")
+        writeSharedState(latest)
         let targets = Activity<SignInActivityAttributes>.activities
         activity = nil
         guard !targets.isEmpty else { return }
 
-        let finalState = makeState(
+        let finalState = SignInActivityAttributes.ContentState(
             statusText: "已停止托管",
-            signedAccounts: "",
-            hostingCount: 0,
-            mood: "sleep",
-            signedCount: 0
+            mood: "sleep"
         )
         for target in targets {
             end(target, with: finalState)
         }
     }
 
-    // MARK: - 内部实现
+    // MARK: - 动画帧
 
-    private func makeState(
-        statusText: String,
-        signedAccounts: String,
-        hostingCount: Int,
-        mood: String,
-        signedCount: Int
-    ) -> SignInActivityAttributes.ContentState {
-        SignInActivityAttributes.ContentState(
-            statusText: statusText,
-            signedAccounts: signedAccounts,
-            hostingCount: hostingCount,
-            mood: mood,
-            signedCount: signedCount
-        )
+    /// 启动帧定时器：不断更新 frame，让灵动岛上的小新与小白「走」起来。
+    ///
+    /// Live Activity 的视图不支持持久动画，只能通过频繁更新内容来驱动。
+    /// App 有后台定位保活，因此后台也能持续出帧。
+    private func startTicker() {
+        guard frameTimer == nil else { return }
+        let timer = Timer(timeInterval: 0.8, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            guard let target = self.activity, self.isUsable(target) else {
+                self.stopTicker()
+                return
+            }
+            guard !self.updating else { return }
+            self.frameIndex = (self.frameIndex + 1) % 600
+            var state = self.latest
+            state.frame = self.frameIndex
+            self.push(state: state, to: target)
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        frameTimer = timer
     }
+
+    private func stopTicker() {
+        frameTimer?.invalidate()
+        frameTimer = nil
+    }
+
+    // MARK: - 内部实现
 
     private func isUsable(_ target: Activity<SignInActivityAttributes>) -> Bool {
         if #available(iOS 16.2, *) {
@@ -205,12 +242,9 @@ final class LiveActivityManager {
         guard let keep = alive.last else { return nil }
 
         if alive.count > 1 {
-            let finalState = makeState(
+            let finalState = SignInActivityAttributes.ContentState(
                 statusText: "正在后台托管",
-                signedAccounts: "",
-                hostingCount: 0,
-                mood: "idle",
-                signedCount: 0
+                mood: "idle"
             )
             for extra in alive where extra.id != keep.id {
                 end(extra, with: finalState)
@@ -223,15 +257,18 @@ final class LiveActivityManager {
         state: SignInActivityAttributes.ContentState,
         to target: Activity<SignInActivityAttributes>
     ) {
+        updating = true
         if #available(iOS 16.2, *) {
-            Task {
+            Task { [weak self] in
                 await target.update(
                     ActivityContent(state: state, staleDate: Date().addingTimeInterval(8 * 3600))
                 )
+                self?.updating = false
             }
         } else {
-            Task {
+            Task { [weak self] in
                 await target.update(using: state)
+                self?.updating = false
             }
         }
     }
@@ -255,19 +292,17 @@ final class LiveActivityManager {
     }
 
     /// 写入 App Group 共享数据（Extension 侧兜底读取用）。
-    private func writeSharedState(
-        status: String,
-        accounts: String,
-        count: Int,
-        mood: String,
-        signedCount: Int
-    ) {
+    private func writeSharedState(_ state: SignInActivityAttributes.ContentState) {
         let defaults = UserDefaults(suiteName: SignInActivityKeys.appGroup)
-        defaults?.set(status, forKey: "live_status_text")
-        defaults?.set(accounts, forKey: "live_signed_accounts")
-        defaults?.set(count, forKey: "live_hosting_count")
-        defaults?.set(mood, forKey: "live_mood")
-        defaults?.set(signedCount, forKey: "live_signed_count")
+        defaults?.set(state.statusText, forKey: "live_status_text")
+        defaults?.set(state.signedAccounts, forKey: "live_signed_accounts")
+        defaults?.set(state.autoCount, forKey: "live_auto_count")
+        defaults?.set(state.scheduledCount, forKey: "live_scheduled_count")
+        defaults?.set(state.manualCount, forKey: "live_manual_count")
+        defaults?.set(state.aiCount, forKey: "live_ai_count")
+        defaults?.set(state.mood, forKey: "live_mood")
+        defaults?.set(state.signedCount, forKey: "live_signed_count")
+        defaults?.set(state.frame, forKey: "live_frame")
     }
 
     @available(iOS 16.2, *)

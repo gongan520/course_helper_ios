@@ -5,7 +5,7 @@ import 'package:flutter/services.dart';
 import '../utils/logger.dart';
 import '../utils/storage.dart';
 
-/// 宠物心情（与 iOS 侧 `mood` 字段一致）。
+/// 心情（与 iOS 侧 `mood` 字段一致）。
 class PetMood {
   /// 平时：托管中但没在签到
   static const idle = 'idle';
@@ -20,12 +20,38 @@ class PetMood {
   static const sleep = 'sleep';
 }
 
+/// 灵动岛上展示的账号统计。
+///
+/// 锁屏卡片会显示成「托管 N / 定时 N / 手动 N / AI 答题 N」四个小胶囊。
+class LiveActivityStats {
+  /// 托管（全自动）模式账号数
+  final int autoCount;
+
+  /// 定时模式账号数
+  final int scheduledCount;
+
+  /// 手动模式账号数
+  final int manualCount;
+
+  /// 已开启 AI 答题的账号数
+  final int aiCount;
+
+  const LiveActivityStats({
+    this.autoCount = 0,
+    this.scheduledCount = 0,
+    this.manualCount = 0,
+    this.aiCount = 0,
+  });
+
+  static const empty = LiveActivityStats();
+}
+
 /// iOS 灵动岛（Live Activity）服务。
 ///
 /// 通过 MethodChannel 调用原生 ActivityKit，在灵动岛 / 锁屏「实时活动」上
-/// 显示一只宠物，用来表示 App 正在后台运行；点击即可回到 App。
+/// 显示「蜡笔小新遛狗」的动画，用来表示 App 正在后台运行；点击即可回到 App。
 ///
-/// 仅在 iOS 16.2+ 生效；其余环境静默降级。
+/// 仅在 iOS 16.1+ 生效；其余环境静默降级。
 ///
 /// 用法：
 ///   - [initialize] 注册回调（App 启动时调用一次）
@@ -92,26 +118,26 @@ class LiveActivity {
 
   /// 启动（或复用）灵动岛。
   Future<Map<String, dynamic>?> show({
-    required String statusText,
+    String statusText = '蜡笔小新正在守护你的课堂',
     String signedAccounts = '',
-    int hostingCount = 0,
+    LiveActivityStats stats = LiveActivityStats.empty,
     String mood = PetMood.idle,
     int signedCount = 0,
   }) async {
     if (!_enabled) return null;
-    return _invoke('start', statusText, signedAccounts, hostingCount, mood, signedCount);
+    return _invoke('start', statusText, signedAccounts, stats, mood, signedCount);
   }
 
   /// 更新灵动岛状态；活动丢失时原生侧会自动重建。
   Future<Map<String, dynamic>?> update({
-    required String statusText,
+    String statusText = '蜡笔小新正在守护你的课堂',
     String signedAccounts = '',
-    int hostingCount = 0,
+    LiveActivityStats stats = LiveActivityStats.empty,
     String mood = PetMood.idle,
     int signedCount = 0,
   }) async {
     if (!_enabled) return null;
-    return _invoke('update', statusText, signedAccounts, hostingCount, mood, signedCount);
+    return _invoke('update', statusText, signedAccounts, stats, mood, signedCount);
   }
 
   /// 结束灵动岛。
@@ -142,7 +168,7 @@ class LiveActivity {
     String method,
     String statusText,
     String signedAccounts,
-    int hostingCount,
+    LiveActivityStats stats,
     String mood,
     int signedCount,
   ) async {
@@ -151,7 +177,10 @@ class LiveActivity {
       final raw = await _channel.invokeMethod<Map>(method, {
         'statusText': statusText,
         'signedAccounts': signedAccounts,
-        'hostingCount': hostingCount,
+        'autoCount': stats.autoCount,
+        'scheduledCount': stats.scheduledCount,
+        'manualCount': stats.manualCount,
+        'aiCount': stats.aiCount,
         'mood': mood,
         'signedCount': signedCount,
       });
