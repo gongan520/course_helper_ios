@@ -1,6 +1,6 @@
 {
-  "version": "1.4.1",
-  "release_notes": "1. 紧凑态改成小新和小白各自独立迈步，两边都在动，占满整条胶囊\n2. 走路加了明显的左右摇摆与上下起伏，尺寸小也看得出在走\n3. 展开态：小新牵小白在整行宽度上来回走动\n4. 锁屏卡片显示托管/定时/手动/AI 答题账号数",
-  "ipa_url": "https://github.com/gongan520/course_helper_ios/releases/download/v1.4.1/CourseHelper_1.4.1_unsigned.ipa",
+  "version": "1.4.2",
+  "release_notes": "1. 紧凑态：小新在左侧可绘制区来回走，小白在右侧可绘制区来回走\n2. 走路动作：8 帧腿部姿态 + 身体摇摆起伏，看得出在迈步\n3. 展开态：小新牵小白横跨整个展开的灵动岛来回走\n4. 锁屏卡片显示托管/定时/手动/AI 答题账号数",
+  "ipa_url": "https://github.com/gongan520/course_helper_ios/releases/download/v1.4.2/CourseHelper_1.4.2_unsigned.ipa",
   "page_url": "https://github.com/gongan520/course_helper_ios/releases/latest"
 }

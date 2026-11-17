@@ -148,14 +148,19 @@ struct SingleWalkView: View {
     var aspect: CGFloat
     var frame: Int
     var height: CGFloat
+    /// 横向行程：角色在自己这一侧的槽位里左右往返走
+    var travel: CGFloat = 0
 
     private var gait: Gait {
         Gait(frame: frame, height: height, swayAmp: 6.5, bobRatio: 0.12)
     }
 
+    private var track: TrackState { TrackState(frame: frame, travel: travel) }
+    private var imageWidth: CGFloat { height * aspect }
+
     var body: some View {
         content
-            .frame(width: height * aspect + 2, height: height + 8)
+            .frame(width: imageWidth + travel * 2 + 2, height: height + 8)
     }
 
     private var content: some View {
@@ -165,8 +170,9 @@ struct SingleWalkView: View {
                     .resizable()
                     .scaledToFit()
                     .frame(height: height)
-                    .rotationEffect(.degrees(gait.sway), anchor: .bottom)
-                    .offset(y: -gait.bob)
+                    .scaleEffect(x: track.mirrored ? -1 : 1, y: 1, anchor: .center)
+                    .rotationEffect(.degrees(track.mirrored ? -gait.sway : gait.sway), anchor: .bottom)
+                    .offset(x: track.dx, y: -gait.bob)
             } else {
                 Color.clear.frame(height: height)
             }
@@ -223,7 +229,7 @@ struct PetLockScreenView: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 6) {
-            WalkSceneView(frame: state.frame, height: 44, travel: 16)
+            WalkSceneView(frame: state.frame, height: 44, travel: 30)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(SignInActivityKeys.slogan)
@@ -292,7 +298,7 @@ struct SignInActivityWidget: Widget {
         DynamicIsland {
             // 展开态：宽度足够，整幅「小新牵小白」在整行上来回走
             DynamicIslandExpandedRegion(.leading) {
-                WalkSceneView(frame: frame, height: 40, travel: 30)
+                WalkSceneView(frame: frame, height: 38, travel: 68)
             }
 
             DynamicIslandExpandedRegion(.trailing) {
@@ -318,14 +324,16 @@ struct SignInActivityWidget: Widget {
                 frames: SignInArt.shinFrames,
                 aspect: SignInArt.shinAspect,
                 frame: frame,
-                height: 25
+                height: 25,
+                travel: 14
             )
         } compactTrailing: {
             SingleWalkView(
                 frames: SignInArt.dogFrames,
                 aspect: SignInArt.dogAspect,
                 frame: frame,
-                height: 14
+                height: 14,
+                travel: 10
             )
         } minimal: {
             SingleWalkView(
