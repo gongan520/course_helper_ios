@@ -12,6 +12,9 @@ import ActivityKit
   private let keepAliveChannel = "com.gongan520.coursehelper/keepalive"
   private let liveActivityChannel = "com.gongan520.coursehelper/liveactivity"
 
+  /// 持有灵动岛通道引用，供「点击灵动岛打开 App」时回调 Flutter。
+  private var liveChannelRef: FlutterMethodChannel?
+
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
@@ -44,43 +47,62 @@ import ActivityKit
       laChannel.setMethodCallHandler { [weak self] (call, result) in
         self?.handleLiveActivity(call, result: result)
       }
+      liveChannelRef = laChannel
     }
 
     return result
   }
 
+  /// 点击灵动岛（widgetURL = coursehelper://live）时进入这里。
+  override func application(
+    _ app: UIApplication,
+    open url: URL,
+    options: [UIApplication.OpenURLOptionsKey: Any] = [:]
+  ) -> Bool {
+    if url.scheme == "coursehelper" {
+      // 通知 Flutter 侧（UI 已在启动流程中，这里只做事件告知，不做路由跳转，
+      // 避免 Flutter 尚未构建完成时导航导致白屏）。
+      liveChannelRef?.invokeMethod("openedFromLiveActivity", arguments: [
+        "url": url.absoluteString
+      ])
+      return true
+    }
+    return super.application(app, open: url, options: options)
+  }
+
   /// 处理灵动岛控制指令。
   private func handleLiveActivity(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
-    guard #available(iOS 16.2, *) else {
-      result(FlutterError(code: "unsupported", message: "需要 iOS 16.2+", details: nil))
+    guard #available(iOS 16.1, *) else {
+      result(FlutterError(code: "unsupported", message: "需要 iOS 16.1+", details: nil))
       return
     }
+
     switch call.method {
     case "start":
       let args = call.arguments as? [String: Any] ?? [:]
-      let status = args["statusText"] as? String ?? "正在托管签到"
-      let accounts = args["signedAccounts"] as? String ?? ""
-      let count = args["hostingCount"] as? Int ?? 0
-      LiveActivityManager.shared.start(
-        statusText: status,
-        signedAccounts: accounts,
-        hostingCount: count
+      let payload = LiveActivityManager.shared.start(
+        statusText: args["statusText"] as? String ?? "正在后台托管",
+        signedAccounts: args["signedAccounts"] as? String ?? "",
+        hostingCount: args["hostingCount"] as? Int ?? 0,
+        mood: args["mood"] as? String ?? "idle",
+        signedCount: args["signedCount"] as? Int ?? 0
       )
-      result(nil)
+      result(payload)
     case "update":
       let args = call.arguments as? [String: Any] ?? [:]
-      let status = args["statusText"] as? String ?? "正在托管签到"
-      let accounts = args["signedAccounts"] as? String ?? ""
-      let count = args["hostingCount"] as? Int ?? 0
-      LiveActivityManager.shared.update(
-        statusText: status,
-        signedAccounts: accounts,
-        hostingCount: count
+      let payload = LiveActivityManager.shared.update(
+        statusText: args["statusText"] as? String ?? "正在后台托管",
+        signedAccounts: args["signedAccounts"] as? String ?? "",
+        hostingCount: args["hostingCount"] as? Int ?? 0,
+        mood: args["mood"] as? String ?? "idle",
+        signedCount: args["signedCount"] as? Int ?? 0
       )
-      result(nil)
+      result(payload)
     case "stop":
       LiveActivityManager.shared.stop()
       result(nil)
+    case "status":
+      result(LiveActivityManager.shared.statusPayload())
     default:
       result(FlutterMethodNotImplemented)
     }

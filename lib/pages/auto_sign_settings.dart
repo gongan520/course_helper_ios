@@ -35,6 +35,9 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
   // 灵动岛开关状态
   bool _liveActivityEnabled = false;
 
+  // 灵动岛原生侧状态（系统权限 / 活动数量 / 最近错误）
+  Map<String, dynamic>? _liveStatus;
+
   @override
   void initState() {
     super.initState();
@@ -46,6 +49,64 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
     _aiEnabledMap = AiAnswerService().enabledAccounts;
     _liveActivityEnabled = LiveActivity().isEnabled;
     _loadHistory();
+    if (_liveActivityEnabled) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _refreshLiveStatus());
+    }
+  }
+
+  /// 刷新灵动岛原生状态（用于诊断「为什么不显示」）。
+  Future<void> _refreshLiveStatus() async {
+    final st = await LiveActivity().status();
+    if (!mounted) return;
+    setState(() => _liveStatus = st);
+  }
+
+  /// 灵动岛状态标题。
+  String get _liveStatusTitle {
+    final st = _liveStatus;
+    if (st == null) return '灵动岛状态：未检测';
+    if (st['systemEnabled'] != true) return '灵动岛状态：系统未允许「实时活动」';
+    final count = st['activityCount'];
+    if (count is int && count > 0) return '灵动岛状态：已创建 $count 个活动';
+    return '灵动岛状态：系统已允许，等托管启动';
+  }
+
+  /// 灵动岛状态说明。
+  String get _liveStatusDetail {
+    final st = _liveStatus;
+    if (st == null) return '点右侧「刷新」重新检测';
+    if (st['systemEnabled'] != true) {
+      return '请到 设置 → JUST DO IT → 实时活动，打开「允许实时活动」后点刷新';
+    }
+    final err = (st['lastError'] ?? '').toString();
+    if (err.isNotEmpty) return '最近错误：$err';
+    return '若显示已创建但灵动岛没出现，多半是重签时没勾选扩展，需把 SignInActivity.appex 一起签名';
+  }
+
+  bool get _liveStatusOk => _liveStatus != null && _liveStatus!['systemEnabled'] == true;
+
+  /// 系统未允许时给出引导。
+  Future<void> _showLiveActivityHelp() async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('灵动岛没有显示'),
+        content: const Text(
+          '系统当前不允许本 App 使用「实时活动」。\n\n'
+          '1. 打开 设置 → JUST DO IT → 实时活动，开启「允许实时活动」\n'
+          '2. 回到这里点「刷新」确认状态\n\n'
+          '如果设置里根本没有「实时活动」这一项，说明重签时没有把插件'
+          '（SignInActivity.appex）一起签名，需要用全能签勾选扩展后重新安装。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('知道了'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -705,13 +766,51 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
           SwitchListTile(
             secondary: const Icon(Icons.widgets_outlined),
             title: const Text('灵动岛显示'),
-            subtitle: const Text('托管签到状态显示在灵动岛/锁屏（需 iPhone 14 Pro 及以上，iOS 16.1+）'),
+            subtitle: const Text('后台挂机时在灵动岛/锁屏养一只宠物，点击可直接回到 App'),
             value: _liveActivityEnabled,
-            onChanged: (v) {
+            onChanged: (v) async {
               setState(() => _liveActivityEnabled = v);
-              LiveActivity().setEnabled(v);
+              await LiveActivity().setEnabled(v);
+              if (!v) {
+                setState(() => _liveStatus = null);
+                return;
+              }
+              // 打开时立刻创建，方便当场确认是否生效
+              final st = await LiveActivity().show(
+                statusText: '正在后台陪着你',
+                hostingCount: AutoSignService().config.accountModes.values
+                    .where((m) =>
+                        m == AutoSignMode.auto.name ||
+                        m == AutoSignMode.scheduled.name)
+                    .length,
+                mood: PetMood.idle,
+              );
+              if (!mounted) return;
+              setState(() => _liveStatus = st);
+              if (st != null && st['systemEnabled'] != true) {
+                await _showLiveActivityHelp();
+              }
             },
           ),
+          if (_liveActivityEnabled) ...[
+            const Divider(height: 1),
+            ListTile(
+              leading: Icon(
+                _liveStatusOk ? Icons.check_circle_outline : Icons.error_outline,
+                color: _liveStatusOk ? Colors.green : scheme.error,
+              ),
+              title: Text(_liveStatusTitle),
+              subtitle: Text(
+                _liveStatusDetail,
+                style: const TextStyle(fontSize: 12, height: 1.4),
+              ),
+              trailing: TextButton(
+                onPressed: _refreshLiveStatus,
+                child: const Text('刷新'),
+              ),
+              isThreeLine: true,
+            ),
+          ],
           const Divider(height: 1),
           ListTile(
             leading: const Icon(Icons.timer_outlined),

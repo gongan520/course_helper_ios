@@ -201,6 +201,13 @@ class AutoSignService {
 
   Timer? _pollTimer;
 
+  // 灵动岛数据：今日签到次数、最近签到的账号、当前心情
+  int _liveSignedCount = 0;
+  String _liveLastAccounts = '';
+  String _liveMood = PetMood.idle;
+  DateTime _liveCountDate = DateTime.now();
+  Timer? _liveMoodTimer;
+
   // 已处理过的活动/课程 id，避免重复签到
   final Set<String> _processedIds = {};
   // 正在处理的 id，防止并发重复
@@ -261,18 +268,64 @@ class AutoSignService {
       );
       // 启动后立即轮询一次
       Future.delayed(const Duration(seconds: 3), () => _pollSignIns());
-      // 启动灵动岛：显示"正在托管签到"
-      LiveActivity().show(
-        statusText: '正在托管签到',
-        hostingCount: _config.accountModes.values
-            .where((v) => v == AutoSignMode.auto.name || v == AutoSignMode.scheduled.name)
-            .length,
-      );
+
+      // 启动灵动岛：宠物上线，表示 App 正在后台运行。
+      // 延后 2 秒再请求：冷启动瞬间 App 还未进入 active 状态，
+      // 此时 Activity.request 可能被系统拒绝，导致「每次启动都不显示」。
+      Future.delayed(const Duration(seconds: 2), () {
+        if (_pollTimer == null) return; // 期间被关闭
+        _rollLiveCountIfNeeded();
+        LiveActivity().show(
+          statusText: '正在后台陪着你',
+          hostingCount: _liveHostingCount,
+          mood: PetMood.idle,
+          signedCount: _liveSignedCount,
+          signedAccounts: _liveLastAccounts,
+        );
+      });
     }
+  }
+
+  /// 当前处于托管/定时模式的账号数量（用于灵动岛展示）。
+  int get _liveHostingCount => _config.accountModes.values
+      .where((v) =>
+          v == AutoSignMode.auto.name || v == AutoSignMode.scheduled.name)
+      .length;
+
+  /// 跨天时重置当日计数。
+  void _rollLiveCountIfNeeded() {
+    final now = DateTime.now();
+    if (now.year != _liveCountDate.year ||
+        now.month != _liveCountDate.month ||
+        now.day != _liveCountDate.day) {
+      _liveSignedCount = 0;
+      _liveLastAccounts = '';
+      _liveCountDate = now;
+    }
+  }
+
+  /// App 回到前台时调用：补建可能被系统回收的灵动岛。
+  ///
+  /// ActivityKit 只允许前台发起请求，所以后台被回收后，只能等下次回前台补上。
+  Future<void> resyncLiveActivity() async {
+    if (!_initialized) return;
+    _rollLiveCountIfNeeded();
+    if (!_config.hasAnyActive) {
+      await LiveActivity().hide();
+      return;
+    }
+    await LiveActivity().show(
+      statusText: _liveMood == PetMood.happy ? '刚刚签到成功' : '正在后台陪着你',
+      hostingCount: _liveHostingCount,
+      mood: _liveMood,
+      signedCount: _liveSignedCount,
+      signedAccounts: _liveLastAccounts,
+    );
   }
 
   void dispose() {
     _pollTimer?.cancel();
+    _liveMoodTimer?.cancel();
   }
 
   /// 定时模式账号：返回当前落在其任一时间段内的账号集合。
@@ -883,16 +936,41 @@ class AutoSignService {
         ),
       );
 
-      // 联动灵动岛：签到结果同步到灵动岛/锁屏实时活动
+      // 联动灵动岛：签到结果同步到宠物实时活动
       if (title.contains('成功')) {
+        _rollLiveCountIfNeeded();
+        _liveSignedCount += 1;
+        _liveMood = PetMood.happy;
+        final account = _extractAccountName(body);
+        if (account.isNotEmpty) _liveLastAccounts = account;
+
         LiveActivity().update(
-          statusText: '已签到',
-          signedAccounts: _extractAccountName(body),
+          statusText: '刚刚签到成功',
+          signedAccounts: _liveLastAccounts,
+          hostingCount: _liveHostingCount,
+          mood: PetMood.happy,
+          signedCount: _liveSignedCount,
         );
+
+        // 60 秒后宠物恢复平常心情
+        _liveMoodTimer?.cancel();
+        _liveMoodTimer = Timer(const Duration(seconds: 60), () {
+          _liveMood = PetMood.idle;
+          LiveActivity().update(
+            statusText: '正在后台陪着你',
+            signedAccounts: _liveLastAccounts,
+            hostingCount: _liveHostingCount,
+            mood: PetMood.idle,
+            signedCount: _liveSignedCount,
+          );
+        });
       } else if (title.contains('需手动')) {
         LiveActivity().update(
-          statusText: '需手动签到',
-          signedAccounts: _extractAccountName(body),
+          statusText: '有个签到你得亲自来',
+          signedAccounts: _liveLastAccounts,
+          hostingCount: _liveHostingCount,
+          mood: PetMood.busy,
+          signedCount: _liveSignedCount,
         );
       }
     } catch (e) {

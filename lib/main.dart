@@ -65,6 +65,12 @@ void main() async {
 
   await EasemobIM().initialize();
 
+  // 灵动岛开关状态与原生回调必须在 AutoSignService 之前就绪：
+  // AutoSignService.initialize() 内部会立刻尝试显示灵动岛，
+  // 如果此时开关还没从本地加载，会被误判为「已关闭」而完全不创建活动。
+  await LiveActivity().initialize();
+  await LiveActivity().loadEnabled();
+
   await AutoSignService().initialize();
 
   // 启动后台多课堂自动答题（每个账号各自跟自己的课，不依赖打开课堂页）
@@ -73,10 +79,21 @@ void main() async {
   // 启动后台定位保活（仅 iOS 生效，保证签到轮询与 WebSocket 后台不冻结）
   await BackgroundKeepAlive().start();
 
-  // 加载灵动岛开关状态
-  await LiveActivity().loadEnabled();
+  // App 回到前台时重新确认灵动岛存在（可能被系统回收或被用户划掉）
+  WidgetsBinding.instance.addObserver(_LiveActivityLifecycleObserver());
 
   runApp(const MyApp());
+}
+
+/// 前台恢复时补建灵动岛：系统只允许前台发起 Live Activity 请求，
+/// 因此后台被回收后只能等下次回到前台补上。
+class _LiveActivityLifecycleObserver with WidgetsBindingObserver {
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      AutoSignService().resyncLiveActivity();
+    }
+  }
 }
 
 class MyApp extends StatelessWidget {

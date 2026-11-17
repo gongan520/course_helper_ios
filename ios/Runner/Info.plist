@@ -53,6 +53,19 @@
 	</array>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
+	<key>NSSupportsLiveActivitiesFrequentUpdates</key>
+	<true/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.gongan520.coursehelper</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>coursehelper</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>需要访问您的位置信息来进行位置签到</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
