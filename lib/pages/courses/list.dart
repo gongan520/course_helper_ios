@@ -230,7 +230,7 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
           _diffNewCourseIds(_lastOnLessonCourses, onLessonCourses) : <String>[];
           _lastOnLessonCourses = onLessonCourses;
           _hasInitialOnLessonData = true;
-          await _loadCourses(onLessonCourses, uid: uid);
+          await _loadCourses(onLessonCourses, uid);
           if (newCourseIds.isNotEmpty) {
             _notifyNewLessons(newCourseIds);
           }
