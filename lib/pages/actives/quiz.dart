@@ -13,6 +13,7 @@ import '../../../models/user.dart';
 import '../../../models/active.dart';
 import '../../../session/account.dart';
 import '../../../service/ai_answer.dart';
+import '../../../service/question_media.dart';
 import '../../../utils/logger.dart';
 import '../widget/accounts_selector.dart';
 
@@ -596,7 +597,13 @@ class _QuizPageState extends State<QuizPage> {
         if (aiType == null) continue;
 
         // 题干
-        final question = _extractTextFromHtml(quiz['content'] ?? '');
+        final rawContent = quiz['content']?.toString() ?? '';
+        final question = _extractTextFromHtml(rawContent);
+        // 题干里的配图（波形图、表格截图等）一并交给模型，否则这类题答不出
+        final images = await QuestionMedia.dataUrls(
+          rawContent,
+          uid: AccountManager.currentUser?.uid,
+        );
 
         // 选项文本列表（仅选择题 / 判断题）
         final answers = quiz['answer'] as List? ?? [];
@@ -615,6 +622,7 @@ class _QuizPageState extends State<QuizPage> {
           question: question,
           type: aiType,
           options: options,
+          images: images,
         );
 
         if (result == null || result.trim().isEmpty) {

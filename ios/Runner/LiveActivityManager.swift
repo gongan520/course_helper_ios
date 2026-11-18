@@ -1,5 +1,6 @@
 import Foundation
 import ActivityKit
+import UIKit
 
 /// 主 App 侧的 Live Activity 管理器。
 ///
@@ -35,6 +36,30 @@ final class LiveActivityManager {
     /// 写入批次号，用于超时复位 `updating`
     private var pushToken: Int = 0
 
+    /// 是否应该持续显示（start/update 置 true，stop 置 false）。
+    /// 看门狗只在「应该显示」时才会去补救，避免用户关掉开关后又被拉起。
+    private var shouldRun = false
+
+    /// 当前活动的创建时间。用于提前换班。
+    private var activityStartedAt: Date?
+
+    /// 看门狗：每 60 秒确认活动是否还活着、是否该换班。
+    private var watchdogTimer: Timer?
+
+    /// 上次重建时间，避免系统拒绝请求时疯狂重试。
+    private var lastRebuildAt: Date?
+
+    /// 后台降频用的计数器（每 5 次 ticker 才真正推送一帧）
+    private var backgroundTickCounter: Int = 0
+
+    /// 系统对 Live Activity 的硬限制：活跃 8 小时后被系统结束，锁屏再保留 4 小时。
+    /// 也就是说任何活动最多存在 12 小时，这是 iOS 的规则，绕不过去。
+    /// 对策是在 7 小时时主动换一个新活动，让用户看不到「消失」的瞬间。
+    private static let maxActivityAge: TimeInterval = 7 * 3600
+
+    /// 重建冷却时间
+    private static let rebuildCooldown: TimeInterval = 60
+
     private init() {}
 
     // MARK: - 状态
@@ -46,9 +71,14 @@ final class LiveActivityManager {
             "activityCount": Activity<SignInActivityAttributes>.activities.count,
             "hasActivity": activity != nil,
             "animating": frameTimer != nil,
+            "shouldRun": shouldRun,
+            "watchdog": watchdogTimer != nil,
             "lastError": lastError ?? "",
             "state": "none"
         ]
+        if let started = activityStartedAt {
+            payload["ageSeconds"] = Int(Date().timeIntervalSince(started))
+        }
         if #available(iOS 16.2, *) {
             if let current = activity {
                 payload["state"] = Self.stateName(current.activityState)
@@ -75,7 +105,9 @@ final class LiveActivityManager {
         defaults.set(Self.schemaVersion, forKey: Self.schemaKey)
 
         stopTicker()
+        stopWatchdog()
         activity = nil
+        activityStartedAt = nil
         let leftovers = Activity<SignInActivityAttributes>.activities
         guard !leftovers.isEmpty else { return }
         let finalState = SignInActivityAttributes.ContentState(
@@ -114,6 +146,7 @@ final class LiveActivityManager {
         )
         latest = state
         writeSharedState(state)
+        shouldRun = true
 
         // 系统层面关闭了「实时活动」时请求必然失败，直接给出明确原因
         guard ActivityAuthorizationInfo().areActivitiesEnabled else {
@@ -124,22 +157,34 @@ final class LiveActivityManager {
         // 1. 已有活动（含冷启动后残留的）→ 复用并更新
         if let existing = adoptExisting() {
             activity = existing
+            // 冷启动认领的旧活动不知道真实创建时间，按现在算，
+            // 最多再过 7 小时就会主动换一个新活动。
+            if activityStartedAt == nil { activityStartedAt = Date() }
             push(state: state, to: existing)
             lastError = nil
             startTicker()
+            startWatchdog()
             return statusPayload()
         }
 
         // 2. 新建
+        _ = requestActivity(with: state)
+        return statusPayload()
+    }
+
+    /// 新建一个实时活动。成功返回 true。
+    ///
+    /// `staleDate` 故意传 nil：设成固定时间的话，只要帧定时器被系统暂停，
+    /// 到时内容就会被标成过期、变灰，最后被回收 —— 表现为「放着不动就没了」。
+    private func requestActivity(
+        with state: SignInActivityAttributes.ContentState
+    ) -> Bool {
         do {
             let created: Activity<SignInActivityAttributes>
             if #available(iOS 16.2, *) {
                 created = try Activity.request(
                     attributes: SignInActivityAttributes(title: "JUST DO IT"),
-                    content: ActivityContent(
-                        state: state,
-                        staleDate: Date().addingTimeInterval(8 * 3600)
-                    ),
+                    content: ActivityContent(state: state, staleDate: nil),
                     pushType: nil
                 )
             } else {
@@ -150,13 +195,17 @@ final class LiveActivityManager {
                 )
             }
             activity = created
+            activityStartedAt = Date()
             lastError = nil
             startTicker()
+            startWatchdog()
+            NSLog("LiveActivity 已创建")
+            return true
         } catch {
             lastError = error.localizedDescription
-            NSLog("LiveActivity 启动失败: \(error)")
+            NSLog("LiveActivity 创建失败: \(error)")
+            return false
         }
-        return statusPayload()
     }
 
     /// 更新状态；活动已丢失时自动重建。
@@ -184,10 +233,13 @@ final class LiveActivityManager {
         )
         latest = state
         writeSharedState(state)
+        shouldRun = true
 
         if let current = activity, isUsable(current) {
+            if activityStartedAt == nil { activityStartedAt = Date() }
             push(state: state, to: current)
             startTicker()
+            startWatchdog()
             return statusPayload()
         }
 
@@ -206,7 +258,11 @@ final class LiveActivityManager {
 
     /// 结束并清除所有活动（用户关闭开关时调用）。
     func stop() {
+        shouldRun = false
         stopTicker()
+        stopWatchdog()
+        activityStartedAt = nil
+        lastRebuildAt = nil
         latest = SignInActivityAttributes.ContentState(statusText: "已停止", mood: "sleep")
         writeSharedState(latest)
         let targets = Activity<SignInActivityAttributes>.activities
@@ -237,14 +293,32 @@ final class LiveActivityManager {
                 self.stopTicker()
                 return
             }
-            // 活动被系统回收 / 用户划掉：清空引用，交给下一次 update 重建，
-            // 避免定格在一个已经消失的活动上。
+            // 活动被系统回收 / 用户划掉：清空引用并尽快重建。
+            // 以前这里只是 stopTicker，靠下一次 update 补救 —— 但后台没有
+            // update 调用，活动就永久消失了，只能手动关开开关。
             guard self.isUsable(target) else {
+                NSLog("LiveActivity 活动已失效，安排重建")
                 self.activity = nil
+                self.activityStartedAt = nil
                 self.stopTicker()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                    self?.ensureAlive("ticker 检测到活动失效")
+                }
                 return
             }
             guard !self.updating else { return }
+
+            // 后台降频：0.4 秒一帧只在前台需要（看得见的流畅度）。
+            // 挂在后台时高频更新会被系统惩罚性限流，反而更容易把活动掐掉，
+            // 所以后台改成 2 秒一帧 —— 活动还活着、内容还在刷，只是跳得慢一点。
+            let inBackground = UIApplication.shared.applicationState != .active
+            if inBackground {
+                self.backgroundTickCounter &+= 1
+                if self.backgroundTickCounter % 5 != 0 { return }
+            } else {
+                self.backgroundTickCounter = 0
+            }
+
             // 4 帧一个心跳周期（正常 → 胀大 → 回落 → 微缩），0.4 秒一帧，1.6 秒跳一次。
             // 灵动岛上是静态场景，只有右边那颗红心需要这个 frame。
             self.frameIndex = (self.frameIndex + 1) % 4
@@ -259,6 +333,63 @@ final class LiveActivityManager {
     private func stopTicker() {
         frameTimer?.invalidate()
         frameTimer = nil
+    }
+
+    // MARK: - 保活（24 小时不掉线）
+
+    /// 看门狗：每 60 秒确认一次活动还在、并且没到系统上限。
+    ///
+    /// 这是「隔一晚就必须关开开关」的根治手段：活动被系统结束或被用户划掉时，
+    /// 帧定时器可能已经停了，没人会发现。看门狗独立于活动存在，能把它拉回来。
+    private func startWatchdog() {
+        guard watchdogTimer == nil else { return }
+        let timer = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
+            self?.ensureAlive("看门狗巡检")
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        watchdogTimer = timer
+    }
+
+    private func stopWatchdog() {
+        watchdogTimer?.invalidate()
+        watchdogTimer = nil
+    }
+
+    /// 确保有一个可用且未超龄的活动，需要时重建 / 换班。
+    private func ensureAlive(_ reason: String) {
+        // 用户关掉开关后不再补救
+        guard shouldRun else { return }
+
+        guard ActivityAuthorizationInfo().areActivitiesEnabled else {
+            lastError = "系统未允许实时活动"
+            return
+        }
+
+        let now = Date()
+
+        if let current = activity, isUsable(current) {
+            let age = activityStartedAt.map { now.timeIntervalSince($0) } ?? 0
+            guard age > Self.maxActivityAge else {
+                // 一切正常：确保帧定时器在跑（被系统暂停过就重新拉起）
+                startTicker()
+                return
+            }
+            // 接近 iOS 的 8 小时上限：主动结束，换一个新活动，避免到点被系统掐掉
+            NSLog("LiveActivity 已运行 \(Int(age / 3600)) 小时，主动换班（\(reason)）")
+            stopTicker()
+            end(current, with: latest)
+            activity = nil
+            activityStartedAt = nil
+            // 换班是计划内动作，不受重建冷却限制
+            lastRebuildAt = nil
+        }
+
+        if let last = lastRebuildAt, now.timeIntervalSince(last) < Self.rebuildCooldown {
+            return
+        }
+        lastRebuildAt = now
+        NSLog("LiveActivity 重建（\(reason)）")
+        _ = requestActivity(with: latest)
     }
 
     // MARK: - 内部实现
@@ -313,8 +444,11 @@ final class LiveActivityManager {
 
         if #available(iOS 16.2, *) {
             Task { [weak self] in
+                // staleDate 传 nil：不用时间戳主动标过期。
+                // 一旦设成「8 小时后过期」，后台更新被系统限流时内容就会变灰，
+                // 接着被回收 —— 这正是「挂一晚就没了」的来源之一。
                 await target.update(
-                    ActivityContent(state: state, staleDate: Date().addingTimeInterval(8 * 3600))
+                    ActivityContent(state: state, staleDate: nil)
                 )
                 guard let self = self else { return }
                 if self.pushToken == token { self.updating = false }

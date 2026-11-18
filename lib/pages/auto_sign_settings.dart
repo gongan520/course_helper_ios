@@ -28,6 +28,7 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
   late final TextEditingController _aiApiKeyController;
   late final TextEditingController _aiBaseUrlController;
   late final TextEditingController _aiModelController;
+  late final TextEditingController _aiVisionModelController;
 
   // 每个账号的 AI 答题开关状态（内存缓存，uid -> 是否启用）
   Map<String, bool> _aiEnabledMap = {};
@@ -46,6 +47,8 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
     _aiApiKeyController = TextEditingController(text: aiConfig.apiKey);
     _aiBaseUrlController = TextEditingController(text: aiConfig.baseUrl);
     _aiModelController = TextEditingController(text: aiConfig.model);
+    _aiVisionModelController =
+        TextEditingController(text: aiConfig.visionModel);
     _aiEnabledMap = AiAnswerService().enabledAccounts;
     _liveActivityEnabled = LiveActivity().isEnabled;
     _loadHistory();
@@ -119,6 +122,7 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
     _aiApiKeyController.dispose();
     _aiBaseUrlController.dispose();
     _aiModelController.dispose();
+    _aiVisionModelController.dispose();
     super.dispose();
   }
 
@@ -955,6 +959,12 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
             ),
             const SizedBox(height: 4),
             Text(
+              '题目里带图片（波形图、电路图、PPT 截图等）时，会自动把图片一起发给模型。'
+              '这类题必须配置下面的「视觉模型」才能作答。',
+              style: TextStyle(fontSize: 12, color: scheme.outline, height: 1.5),
+            ),
+            const SizedBox(height: 4),
+            Text(
               '开启 AI 答题的账号会在后台各自跟自己的课：不打开课堂页也会自动答题并提交。\n'
               '仅雨课堂支持后台跟课；学习通需打开课堂页后自动答题。',
               style: TextStyle(fontSize: 12, color: scheme.outline, height: 1.5),
@@ -990,6 +1000,19 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
                 border: OutlineInputBorder(),
               ),
             ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _aiVisionModelController,
+              decoration: const InputDecoration(
+                labelText: '视觉模型名（题目带图片时使用）',
+                hintText: '如 qwen-vl-max / glm-4v-plus / gpt-4o',
+                isDense: true,
+                border: OutlineInputBorder(),
+                helperText: '波形图、电路图、表格截图类题目必须先看图才能作答。\n'
+                    '留空则用上面的模型（它必须本身支持图片输入）。',
+                helperMaxLines: 3,
+              ),
+            ),
             if (_aiApiKeyController.text.isEmpty) ...[
               const SizedBox(height: 8),
               Text(
@@ -1021,6 +1044,7 @@ class _AutoSignSettingsPageState extends State<AutoSignSettingsPage> {
       apiKey: _aiApiKeyController.text.trim(),
       baseUrl: _aiBaseUrlController.text.trim(),
       model: _aiModelController.text.trim(),
+      visionModel: _aiVisionModelController.text.trim(),
     );
     await AiAnswerService().updateConfig(cfg);
     // 首次填好密钥后让后台答题引擎真正启动（已运行则忽略）

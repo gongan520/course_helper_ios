@@ -1,6 +1,6 @@
 {
-  "version": "1.4.3",
-  "release_notes": "1. 灵动岛左边固定显示「蜡笔小新牵着小白」，静态不动的插画\n2. 灵动岛右边加了一颗红色爱心，会扑通扑通跳\n3. 锁屏卡片也改成静态的小新牵小白，不再有走动动画\n4. 锁屏卡片保留托管/定时/手动/AI 答题账号数",
-  "ipa_url": "https://github.com/gongan520/course_helper_ios/releases/download/v1.4.3/CourseHelper_1.4.3_unsigned.ipa",
+  "version": "1.4.4",
+  "release_notes": "1. 修复课程列表被刷成别的账号的课（同一门课不同教学班时最明显）\n2. AI 答题支持图片题：自动下载题干配图，用视觉模型作答（波形图、电路图、表格截图都能答）\n3. 新增「视觉模型名」配置项，题目带图时自动切换\n4. 灵动岛 24 小时不断线：活动被系统回收后自动重建、临近系统上限主动换班、后台自动降频\n5. 灵动岛诊断信息增加运行时长与看门狗状态",
+  "ipa_url": "https://github.com/gongan520/course_helper_ios/releases/download/v1.4.4/CourseHelper_1.4.4_unsigned.ipa",
   "page_url": "https://github.com/gongan520/course_helper_ios/releases/latest"
 }

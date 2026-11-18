@@ -8,18 +8,22 @@ import '../utils/storage.dart';
 /// AI 答题配置。
 ///
 /// 字段含义：
-/// - [apiKey]：DeepSeek API 密钥；
+/// - [apiKey]：API 密钥；
 /// - [baseUrl]：API 基础地址（默认 https://api.deepseek.com）；
-/// - [model]：模型名（默认 deepseek-chat，可换成 deepseek-reasoner 或其他 OpenAI 兼容模型）。
+/// - [model]：模型名（默认 deepseek-chat，可换成 deepseek-reasoner 或其他 OpenAI 兼容模型）；
+/// - [visionModel]：能看图的模型名。题目带图片（波形图、电路图、表格截图等）时优先用它；
+///   留空则退回 [model]，此时 [model] 必须本身支持图片输入。
 class AiAnswerConfig {
   String apiKey;
   String baseUrl;
   String model;
+  String visionModel;
 
   AiAnswerConfig({
     this.apiKey = '',
     this.baseUrl = 'https://api.deepseek.com',
     this.model = 'deepseek-chat',
+    this.visionModel = '',
   });
 
   factory AiAnswerConfig.fromJson(Map<String, dynamic> json) {
@@ -27,6 +31,7 @@ class AiAnswerConfig {
       apiKey: json['apiKey'] as String? ?? '',
       baseUrl: json['baseUrl'] as String? ?? 'https://api.deepseek.com',
       model: json['model'] as String? ?? 'deepseek-chat',
+      visionModel: json['visionModel'] as String? ?? '',
     );
   }
 
@@ -35,6 +40,7 @@ class AiAnswerConfig {
       'apiKey': apiKey,
       'baseUrl': baseUrl,
       'model': model,
+      'visionModel': visionModel,
     };
   }
 }
@@ -108,14 +114,24 @@ class AiAnswerService {
   /// 是否已配置 API 密钥。
   bool get isConfigured => config.apiKey.trim().isNotEmpty;
 
+  /// 是否配置了专门的视觉模型（题目带图时用）。
+  bool get hasVisionModel => config.visionModel.trim().isNotEmpty;
+
   /// 调用 AI 生成答案。
   ///
-  /// [question]：题目内容；[type]：题型；[options]：选项列表（判断/填空/简答时可能为 null）。
+  /// [question]：题目文字（已去掉 HTML 标签）；
+  /// [type]：题型；
+  /// [options]：选项列表（判断/填空/简答时可能为 null）；
+  /// [images]：题目配图的 data URL 列表。
+  ///   非空时按多模态请求发送，模型取 [AiAnswerConfig.visionModel]，
+  ///   未配置则用 [AiAnswerConfig.model]（此时该模型必须支持看图）。
+  ///
   /// 成功返回答案字符串，失败返回 null。
   Future<String?> answer({
     required String question,
     required String type,
     List<String>? options,
+    List<String>? images,
   }) async {
     final cfg = config;
     if (!isConfigured) {
@@ -123,44 +139,75 @@ class AiAnswerService {
       return null;
     }
 
-    final prompt = _buildPrompt(question: question, type: type, options: options);
+    final pics = images?.where((e) => e.isNotEmpty).toList() ?? const <String>[];
+    final hasImage = pics.isNotEmpty;
+
+    // 有图时必须换成能看图的模型，否则模型只能对着文字瞎猜
+    final vision = cfg.visionModel.trim();
+    final model = hasImage && vision.isNotEmpty ? vision : cfg.model;
+
+    final prompt = _buildPrompt(
+      question: question,
+      type: type,
+      options: options,
+      hasImage: hasImage,
+    );
 
     // 使用独立的 Dio 实例，避免污染学习通/雨课堂的 cookie/header。
     final dio = Dio(
       BaseOptions(
         baseUrl: cfg.baseUrl,
         connectTimeout: const Duration(seconds: 60),
-        receiveTimeout: const Duration(seconds: 60),
+        receiveTimeout: const Duration(seconds: 90),
       ),
     );
 
-    try {
-      final response = await dio.post(
-        '/chat/completions',
-        options: Options(
-          headers: {
-            'Authorization': 'Bearer ${cfg.apiKey}',
-            'Content-Type': 'application/json',
-          },
-        ),
-        data: {
-          'model': cfg.model,
+    final headers = {
+      'Authorization': 'Bearer ${cfg.apiKey}',
+      'Content-Type': 'application/json',
+    };
+
+    Map<String, dynamic> payload(Object content) => {
+          'model': model,
           'messages': [
-            {'role': 'user', 'content': prompt},
+            {'role': 'user', 'content': content},
           ],
           'temperature': 0.1,
           'stream': false,
-        },
-      );
+        };
 
-      final content = response.data['choices'][0]['message']['content'];
-      if (content == null) {
+    try {
+      Response response;
+      try {
+        response = await dio.post(
+          '/chat/completions',
+          options: Options(headers: headers),
+          data: payload(hasImage ? _multiModalContent(prompt, pics) : prompt),
+        );
+      } on DioException catch (e) {
+        if (!hasImage) rethrow;
+        // 模型不支持图片输入时接口通常返回 400。这里退回纯文本再试一次，
+        // 至少能给出基于题干文字的部分答案，而不是整题空着。
+        logger.w(
+          'AI 答题：带图请求失败（${e.response?.statusCode}），退回纯文本重试。'
+          '如果长期失败，请在设置里填写支持看图的视觉模型',
+        );
+        response = await dio.post(
+          '/chat/completions',
+          options: Options(headers: headers),
+          data: payload(prompt),
+        );
+      }
+
+      final content = _readContent(response.data);
+      if (content == null || content.trim().isEmpty) {
         logger.e('AI 答题：响应缺少 content');
         return null;
       }
-      return content.toString();
+      return content;
     } on DioException catch (e) {
-      logger.e('AI 答题请求失败: ${e.type} - ${e.message}');
+      logger.e('AI 答题请求失败: ${e.type} - ${e.message}'
+          '${e.response?.statusCode != null ? ' (${e.response?.statusCode})' : ''}');
       return null;
     } catch (e) {
       logger.e('AI 答题解析失败: $e');
@@ -168,16 +215,61 @@ class AiAnswerService {
     }
   }
 
+  /// OpenAI 多模态格式：文本 + 若干图片。
+  static List<Map<String, dynamic>> _multiModalContent(
+    String text,
+    List<String> images,
+  ) {
+    return [
+      {'type': 'text', 'text': text},
+      for (final img in images)
+        {
+          'type': 'image_url',
+          'image_url': {'url': img},
+        },
+    ];
+  }
+
+  /// 取响应里的答案正文。
+  ///
+  /// 多数接口是 `choices[0].message.content` 字符串，
+  /// 部分模型会返回 content 数组（`[{type:text, text:...}]`），这里统一处理。
+  static String? _readContent(dynamic data) {
+    if (data is! Map) return null;
+    final choices = data['choices'];
+    if (choices is! List || choices.isEmpty) return null;
+    final msg = choices[0] is Map ? (choices[0] as Map)['message'] : null;
+    if (msg is! Map) return null;
+    final content = msg['content'];
+    if (content is String) return content;
+    if (content is List) {
+      final buf = StringBuffer();
+      for (final part in content) {
+        if (part is Map && part['text'] != null) buf.write(part['text']);
+      }
+      return buf.isEmpty ? null : buf.toString();
+    }
+    return null;
+  }
+
   /// 根据题型构造 prompt，让 AI 只返回答案本身。
   String _buildPrompt({
     required String question,
     required String type,
     List<String>? options,
+    bool hasImage = false,
   }) {
+    // 题目带图时统一加一句交代，否则模型容易忽略图片
+    const imageHint =
+        '（题目附有图片，图中含有解题所需的关键信息 —— 例如波形、坐标轴、电路或表格，'
+        '请先仔细读图再作答。）\n';
+
+    final prefix = hasImage ? imageHint : '';
+
     switch (type) {
       case 'single':
         final lines = <String>[
-          '请从以下选项中选择唯一正确答案，只回复选项字母（如 A、B、C、D），不要任何解释。',
+          '${prefix}请从以下选项中选择唯一正确答案，只回复选项字母（如 A、B、C、D），不要任何解释。',
           '题目：$question',
           '选项：',
         ];
@@ -190,7 +282,7 @@ class AiAnswerService {
 
       case 'multiple':
         final lines = <String>[
-          '请从以下选项中选择所有正确答案（可能多个），只回复选项字母组合（如 ABD），不要任何解释。',
+          '${prefix}请从以下选项中选择所有正确答案（可能多个），只回复选项字母组合（如 ABD），不要任何解释。',
           '题目：$question',
           '选项：',
         ];
@@ -202,17 +294,19 @@ class AiAnswerService {
         return lines.join('\n');
 
       case 'judge':
-        return '请判断以下说法是否正确，只回复"正确"或"错误"两个字，不要任何解释。\n题目：$question';
+        return '${prefix}请判断以下说法是否正确，只回复"正确"或"错误"两个字，不要任何解释。\n题目：$question';
 
       case 'blank':
-        return '请回答以下填空题，只回复填空的答案，多个空用分号分隔，不要任何解释。\n题目：$question';
+        return '${prefix}请回答以下填空题，只回复填空的答案，多个空用分号分隔，不要任何解释。\n题目：$question';
 
       case 'short':
-        return '请回答以下题目，给出简洁、准确的答案，直接回复答案内容，不要复述题目。\n题目：$question';
+        return '${prefix}请回答以下题目，给出简洁、准确的答案，直接回复答案内容，不要复述题目。\n'
+            '题目：$question';
 
       default:
         // 未知题型按简答处理。
-        return '请回答以下题目，给出简洁、准确的答案，直接回复答案内容，不要复述题目。\n题目：$question';
+        return '${prefix}请回答以下题目，给出简洁、准确的答案，直接回复答案内容，不要复述题目。\n'
+            '题目：$question';
     }
   }
 }

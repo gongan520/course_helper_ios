@@ -208,21 +208,31 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
 
     if (_refreshTimer != null && _refreshTimer!.isActive) return;
 
-    _refreshTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
+    // 6 秒一轮：3 秒时请求过密，服务端限流反而更容易出现列表抖动
+    _refreshTimer = Timer.periodic(const Duration(seconds: 6), (_) async {
       if (!mounted || !AccountManager.hasActiveSession()) return;
 
+      // 锁定本次请求所属账号。
+      // 不传 uid 时接口会退回全局 currentSessionId，而它可能被后台任务或
+      // 其他账号的请求改掉，结果就是把别人正在上的课刷进当前账号的列表里
+      // （同一门课不同教学班时尤其明显）。
+      final uid = AccountManager.currentUser?.uid;
+      if (uid == null) return;
+
       try {
-        final onLessonCourses = await RCCourseApi.getOnLesson();
-        if (onLessonCourses != null && mounted) {
-          if (!const DeepCollectionEquality().equals(_lastOnLessonCourses, onLessonCourses)) {
-            final newCourseIds = _hasInitialOnLessonData ?
-            _diffNewCourseIds(_lastOnLessonCourses, onLessonCourses) : <String>[];
-            _lastOnLessonCourses = onLessonCourses;
-            _hasInitialOnLessonData = true;
-            await _loadCourses(onLessonCourses);
-            if (newCourseIds.isNotEmpty) {
-              _notifyNewLessons(newCourseIds);
-            }
+        final onLessonCourses = await RCCourseApi.getOnLesson(userId: uid);
+        if (onLessonCourses == null || !mounted) return;
+        // 请求期间用户切换了账号：这批数据属于旧账号，直接丢弃
+        if (AccountManager.currentSessionId != uid) return;
+
+        if (!const DeepCollectionEquality().equals(_lastOnLessonCourses, onLessonCourses)) {
+          final newCourseIds = _hasInitialOnLessonData ?
+          _diffNewCourseIds(_lastOnLessonCourses, onLessonCourses) : <String>[];
+          _lastOnLessonCourses = onLessonCourses;
+          _hasInitialOnLessonData = true;
+          await _loadCourses(onLessonCourses, uid: uid);
+          if (newCourseIds.isNotEmpty) {
+            _notifyNewLessons(newCourseIds);
           }
         }
       } catch (e) {
@@ -260,7 +270,11 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _loadCourses([List<dynamic>? onLessonCourses]) async {
+  /// 加载课程列表。
+  ///
+  /// [uid] 显式指定要加载哪个账号的课。不传则取当前账号快照，
+  /// 保证「请求期间切换了账号」时不会把旧账号的数据写进新账号的列表。
+  Future<void> _loadCourses([List<dynamic>? onLessonCourses, String? uid]) async {
     setState(() {
       _isLoading = true;
     });
@@ -273,13 +287,19 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
       return;
     }
 
+    final targetUid = uid ?? AccountManager.currentUser?.uid;
+
     try {
       late List<Course>? coursesData;
       if (PlatformManager().isChaoxing) {
         coursesData = await CXCourseApi.getCoursesList();
       } else if (PlatformManager().isRainClassroom) {
-        coursesData = await RCCourseApi.getCoursesList(onLessonCourses);
+        coursesData = await RCCourseApi.getCoursesList(onLessonCourses, targetUid);
       }
+
+      // 期间又切了账号：这批结果属于上一个账号，丢弃而不是覆盖
+      if (!mounted) return;
+      if (targetUid != null && AccountManager.currentSessionId != targetUid) return;
 
       if (coursesData != null && coursesData.isNotEmpty) {
         setState(() {
@@ -293,6 +313,7 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
         });
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _courses = [];
         _isLoading = false;

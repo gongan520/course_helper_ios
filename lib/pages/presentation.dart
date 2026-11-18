@@ -19,6 +19,7 @@ import '../session/account.dart';
 import '../platform.dart';
 import '../push/notification.dart';
 import '../service/ai_answer.dart';
+import '../service/question_media.dart';
 import '../service/auto_answer.dart';
 import '../service/auto_sign.dart';
 import '../utils/logger.dart';
@@ -1623,7 +1624,10 @@ class _PresentationPageState extends State<PresentationPage> {
     setState(() => _isAiAnswering = true);
 
     try {
-      final question = problem.body;
+      // 题干是 HTML：去标签后再给模型；同时把配图取下来一起发过去，
+      // 否则波形图/电路图/表格这类题目模型看不到图，只能瞎猜。
+      final question = QuestionMedia.htmlToText(problem.body);
+      final images = await QuestionMedia.dataUrls(problem.body, uid: currentUid);
       final options = problem.options
               ?.map((o) => o.value)
               .where((v) => v.isNotEmpty)
@@ -1637,7 +1641,7 @@ class _PresentationPageState extends State<PresentationPage> {
         case 1: // 单选题（判断题在 PPT 也是单选题）
           aiType = 'single';
           raw = await AiAnswerService().answer(
-            question: question, type: aiType, options: options);
+            question: question, type: aiType, options: options, images: images);
           if (raw != null) {
             final key = _mapLetterToKey(raw, problem.options);
             if (key != null) {
@@ -1650,7 +1654,7 @@ class _PresentationPageState extends State<PresentationPage> {
         case 3: // 投票题（按多选处理）
           aiType = 'multiple';
           raw = await AiAnswerService().answer(
-            question: question, type: aiType, options: options);
+            question: question, type: aiType, options: options, images: images);
           if (raw != null) {
             final keys = _mapLettersToKeys(raw, problem.options);
             if (keys.isNotEmpty) {
@@ -1662,7 +1666,7 @@ class _PresentationPageState extends State<PresentationPage> {
         case 4: // 填空题
           aiType = 'blank';
           raw = await AiAnswerService().answer(
-            question: question, type: aiType, options: null);
+            question: question, type: aiType, options: null, images: images);
           if (raw != null) {
             final answer = raw;
             final blanks = problem.blanks;
@@ -1682,7 +1686,7 @@ class _PresentationPageState extends State<PresentationPage> {
         case 5: // 主观题
           aiType = 'short';
           raw = await AiAnswerService().answer(
-            question: question, type: aiType, options: null);
+            question: question, type: aiType, options: null, images: images);
           if (raw != null) {
             final answer = raw;
             setState(() {
@@ -1695,7 +1699,7 @@ class _PresentationPageState extends State<PresentationPage> {
         default:
           aiType = 'short';
           raw = await AiAnswerService().answer(
-            question: question, type: aiType, options: null);
+            question: question, type: aiType, options: null, images: images);
           if (raw != null) {
             final answer = raw;
             setState(() {

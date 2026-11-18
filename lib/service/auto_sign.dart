@@ -209,6 +209,10 @@ class AutoSignService {
   DateTime _liveCountDate = DateTime.now();
   Timer? _liveMoodTimer;
 
+  /// 灵动岛心跳：定期把状态同步给原生侧，顺便触发「活动丢了就重建」。
+  /// 原生有看门狗兜底，这里是第二道保险。
+  Timer? _liveHeartbeatTimer;
+
   // 已处理过的活动/课程 id，避免重复签到
   final Set<String> _processedIds = {};
   // 正在处理的 id，防止并发重复
@@ -252,6 +256,8 @@ class AutoSignService {
   void _startTimers() {
     _pollTimer?.cancel();
     _pollTimer = null;
+    _liveHeartbeatTimer?.cancel();
+    _liveHeartbeatTimer = null;
 
     // 没有任何账号开启自动/定时则完全不轮询
     if (!_config.hasAnyActive) {
@@ -269,6 +275,21 @@ class AutoSignService {
       );
       // 启动后立即轮询一次
       Future.delayed(const Duration(seconds: 3), () => _pollSignIns());
+
+      // 灵动岛 5 分钟心跳：只更新状态、不做任何会计数。
+      // 作用是让活动定期被「摸一下」—— 万一被系统回收，update 会自动重建；
+      // 也让活动的内容时间戳保持新鲜，不会被判定为长时间无更新。
+      _liveHeartbeatTimer = Timer.periodic(const Duration(minutes: 5), (_) {
+        LiveActivity().update(
+          statusText: _liveMood == PetMood.happy
+              ? '刚帮你签到成功啦'
+              : '蜡笔小新正在守护你的课堂',
+          stats: _liveStats,
+          mood: _liveMood,
+          signedCount: _liveSignedCount,
+          signedAccounts: _liveLastAccounts,
+        );
+      });
 
       // 启动灵动岛：宠物上线，表示 App 正在后台运行。
       // 延后 2 秒再请求：冷启动瞬间 App 还未进入 active 状态，
@@ -374,6 +395,7 @@ class AutoSignService {
   void dispose() {
     _pollTimer?.cancel();
     _liveMoodTimer?.cancel();
+    _liveHeartbeatTimer?.cancel();
   }
 
   /// 定时模式账号：返回当前落在其任一时间段内的账号集合。

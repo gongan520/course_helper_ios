@@ -12,6 +12,7 @@ import '../push/notification.dart';
 import '../utils/logger.dart';
 import 'ai_answer.dart';
 import 'auto_sign.dart';
+import 'question_media.dart';
 
 /// 后台多课堂自动答题引擎。
 ///
@@ -460,7 +461,7 @@ class AutoAnswerEngine {
         return;
       }
 
-      final payload = await _buildAnswer(problem);
+      final payload = await _buildAnswer(problem, uid: s.user.uid);
       if (payload == null) {
         logger.w('后台答题：${s.user.name} 题目 $problemId AI 未生成答案');
         return;
@@ -497,34 +498,48 @@ class AutoAnswerEngine {
     }
   }
 
-  /// 按题型生成提交内容，与页面内答题保持一致的格式
-  Future<_AnswerPayload?> _buildAnswer(Problem problem) async {
-    final question = problem.body;
+  /// 按题型生成提交内容，与页面内答题保持一致的格式。
+  ///
+  /// 题干是 HTML 片段：转成纯文本给模型，同时把里面的配图下载下来一起发过去。
+  /// 只发文字时，波形图 / 电路图 / 表格截图这类题目模型完全看不到图，必然答错或答不出。
+  Future<_AnswerPayload?> _buildAnswer(Problem problem, {String? uid}) async {
+    final question = QuestionMedia.htmlToText(problem.body);
+    final images = await QuestionMedia.dataUrls(problem.body, uid: uid);
     final options = problem.options
             ?.map((o) => o.value)
             .where((v) => v.isNotEmpty)
             .toList() ??
         <String>[];
 
+    if (images.isNotEmpty) {
+      logger.i('题目 ${problem.problemId} 带 ${images.length} 张图，按多模态作答');
+    }
+
     switch (problem.problemType) {
       case 1: // 单选（判断题在课件里也是单选）
-        final raw = await AiAnswerService()
-            .answer(question: question, type: 'single', options: options);
+        final raw = await AiAnswerService().answer(
+            question: question,
+            type: 'single',
+            options: options,
+            images: images);
         if (raw == null) return null;
         final key = _mapLetterToKey(raw, problem.options);
         return key == null ? null : _AnswerPayload(options: [key]);
 
       case 2: // 多选
       case 3: // 投票题按多选处理
-        final raw = await AiAnswerService()
-            .answer(question: question, type: 'multiple', options: options);
+        final raw = await AiAnswerService().answer(
+            question: question,
+            type: 'multiple',
+            options: options,
+            images: images);
         if (raw == null) return null;
         final keys = _mapLettersToKeys(raw, problem.options);
         return keys.isEmpty ? null : _AnswerPayload(options: keys);
 
       case 4: // 填空
-        final raw = await AiAnswerService()
-            .answer(question: question, type: 'blank', options: null);
+        final raw = await AiAnswerService().answer(
+            question: question, type: 'blank', options: null, images: images);
         if (raw == null) return null;
         final blanks = problem.blanks;
         if (blanks.isEmpty) return _AnswerPayload(options: [raw]);
@@ -538,8 +553,8 @@ class AutoAnswerEngine {
 
       case 5: // 主观题
       default:
-        final raw = await AiAnswerService()
-            .answer(question: question, type: 'short', options: null);
+        final raw = await AiAnswerService().answer(
+            question: question, type: 'short', options: null, images: images);
         if (raw == null) return null;
         return _AnswerPayload(content: raw, options: const []);
     }
