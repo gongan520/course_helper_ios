@@ -69,8 +69,10 @@ class AutoAnswerEngine {
       return;
     }
 
-    _syncTimer = Timer.periodic(const Duration(seconds: 10), (_) => _sync());
-    Future.delayed(const Duration(seconds: 8), _sync);
+    // 5 秒一轮：比之前 10 秒更快地发现新课堂并接入。
+    // 老师出题后往往只给几十秒，接入/建连/加载课件的每一秒延迟都可能导致答不上。
+    _syncTimer = Timer.periodic(const Duration(seconds: 5), (_) => _sync());
+    Future.delayed(const Duration(seconds: 2), _sync);
     logger.i('后台多课堂答题引擎已启动');
   }
 
@@ -378,9 +380,12 @@ class AutoAnswerEngine {
     }
   }
 
-  /// 拉取课件，缓存「题目 id → 题目内容」，供 unlockproblem 时使用
-  Future<void> _loadSlides(_LessonSession s, String presentationId) async {
-    if (s.presentationId == presentationId && s.problems.isNotEmpty) return;
+  /// 拉取课件，缓存「题目 id → 题目内容」，供 unlockproblem 时使用。
+  ///
+  /// [force] 为 true 时跳过「已加载」判断，强制重新拉取 —— 用于题目解锁时
+  /// 课件还没加载到位、需要立刻补拉的场景。
+  Future<void> _loadSlides(_LessonSession s, String presentationId, {bool force = false}) async {
+    if (!force && s.presentationId == presentationId && s.problems.isNotEmpty) return;
     try {
       final api = RCCourseApi(s.user);
       final data = await api.getPresentation(presentationId);
@@ -449,14 +454,23 @@ class AutoAnswerEngine {
 
     _answering.add(key);
     try {
-      // 题目内容来自课件，可能比解锁事件稍晚到，短暂重试
+      // 题目内容来自课件，可能比解锁事件稍晚到。
+      // 延长等待并主动补拉课件：老师一出题就解锁，此时课件若还没加载完，
+      // 只在内存里等几秒会错过整道题 —— 这里是「上次半小时没答上」的主因之一。
       Problem? problem = _resolveProblem(s, problemId);
-      for (var i = 0; i < 5 && problem == null; i++) {
-        await Future.delayed(const Duration(milliseconds: 600));
+      var waited = 0;
+      while (problem == null && waited < 15) {
+        await Future.delayed(const Duration(milliseconds: 1000));
+        waited += 1;
         problem = _resolveProblem(s, problemId);
+        // 每 3 秒主动补拉一次课件（unlockproblem 可能先于 hello 的课件加载到达）
+        if (problem == null && waited % 3 == 0 && s.presentationId != null) {
+          final pid = s.presentationId!;
+          unawaited(_loadSlides(s, pid, force: true));
+        }
       }
       if (problem == null) {
-        logger.w('后台答题：${s.user.name} 未找到题目 $problemId 的内容，跳过');
+        logger.w('后台答题：${s.user.name} 未找到题目 $problemId 的内容（等待 ${waited}s），跳过');
         return;
       }
 

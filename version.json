@@ -1,6 +1,6 @@
 {
-  "version": "1.4.5",
-  "release_notes": "1. 修复托管签到串课：多个账号同一时段上不同课程时，不再把所有课都签给所有账号\n2. 课程归属改用「账号自己选修列表」作为权威判断，拿不到时宁可少签也不串签\n3. 签到不再强制把账号拉进教室（joinIfNotIn 关闭），从源头防止账号被拉进别人的课堂",
-  "ipa_url": "https://github.com/gongan520/course_helper_ios/releases/download/v1.4.5/CourseHelper_1.4.5_unsigned.ipa",
+  "version": "1.4.6",
+  "release_notes": "1. AI 答题提速：AI 接口超时从 60/90 秒降到 8/30 秒，不再因 AI 卡顿导致整题错过\n2. 题目解锁后等待课件的时间从 3 秒延长到 15 秒，并主动补拉课件，大幅减少「答不上」\n3. 后台答题引擎同步周期从 10 秒加快到 5 秒，更快接入课堂\n4. 旁听生课程不答题：未正式选修的课（不在学习列表内）一律跳过，只答自己的课",
+  "ipa_url": "https://github.com/gongan520/course_helper_ios/releases/download/v1.4.6/CourseHelper_1.4.6_unsigned.ipa",
   "page_url": "https://github.com/gongan520/course_helper_ios/releases/latest"
 }

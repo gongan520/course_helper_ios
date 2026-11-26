@@ -154,11 +154,13 @@ class AiAnswerService {
     );
 
     // 使用独立的 Dio 实例，避免污染学习通/雨课堂的 cookie/header。
+    // 超时要短：老师出的题常有时间限制，AI 卡住几十秒就等于答不上。
+    // 连接 8 秒、整体 30 秒足够覆盖绝大多数选择/填空/简答题。
     final dio = Dio(
       BaseOptions(
         baseUrl: cfg.baseUrl,
-        connectTimeout: const Duration(seconds: 60),
-        receiveTimeout: const Duration(seconds: 90),
+        connectTimeout: const Duration(seconds: 8),
+        receiveTimeout: const Duration(seconds: 30),
       ),
     );
 
