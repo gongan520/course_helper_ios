@@ -555,17 +555,25 @@ class AutoSignService {
       final onLesson = await RCCourseApi.getOnLesson(userId: user.uid);
       if (onLesson == null || onLesson.isEmpty) continue;
 
-      // 课程名映射：onLesson 仅含 courseId/lessonId，通过课程列表补全课程名
+      // 课程归属的权威数据源：该账号自己选修的课程 ID 集合（learning_list）。
+      // 之前用 getCoursesList(onLesson) 做过滤，它有多个失效点（接口失败返回 null、
+      // 字段匹配不上返回空列表），一旦失效 canVerifyOwnership 就变 false，
+      // 校验被跳过 → 该账号把 getOnLesson 返回的所有课（含被误拉进别人教室的脏课）
+      // 全部签一遍，即「多账号同一时段把所有课都签上」的根因。
+      final ownCourseIds = await RCCourseApi.getOwnCourseIds(userId: user.uid);
+
+      // 拿不到权威课程列表时，无法确认每节课是否属于该账号。
+      // 此时**跳过该账号本轮的自动签到**，宁可少签，也绝不串签别人课。
+      if (ownCourseIds == null) {
+        logger.w('雨课堂账号 ${user.name} 拉取自己的课程列表失败，'
+            '本轮跳过自动签到（避免串签他人课程）');
+        continue;
+      }
+
+      // 课程名映射：onLesson 仅含 courseId/lessonId，通过课程列表补全课程名（仅用于展示）
       final ownCourses = await RCCourseApi.getCoursesList(onLesson, user.uid);
-      final courses = ownCourses ?? const <Course>[];
-      final ownCourseIds = courses
-          .map((c) => c.courseId)
-          .where((id) => id.isNotEmpty)
-          .toSet();
-      // 只有课程列表拉取成功时，才能校验「这节课是否属于该账号」
-      final canVerifyOwnership = ownCourses != null && ownCourseIds.isNotEmpty;
       final courseByLesson = <String, Course>{};
-      for (final c in courses) {
+      for (final c in ownCourses ?? const <Course>[]) {
         final lid = c.lessonId;
         if (lid != null && lid.isNotEmpty) courseByLesson[lid] = c;
       }
@@ -579,12 +587,9 @@ class AutoSignService {
             lesson['courseId']?.toString() ??
             '';
 
-        // 账号隔离校验：这节课所属课程不在本账号的课程列表里，
-        // 说明这是别人的课（历史上可能被跨账号签到拉进了教室）。
-        // 必须跳过，否则账号 A 会去签账号 B 的课。
-        if (canVerifyOwnership &&
-            lessonCourseId.isNotEmpty &&
-            !ownCourseIds.contains(lessonCourseId)) {
+        // 账号隔离校验：这节课所属课程必须在本账号自己选修的课程列表里，
+        // 否则就是别人（或历史上被误拉进）的课，直接跳过。
+        if (lessonCourseId.isEmpty || !ownCourseIds.contains(lessonCourseId)) {
           logger.w('雨课堂账号 ${user.name} 的上课记录 $lessonId'
               '（课程 $lessonCourseId）不在其课程列表中，跳过（避免跨账号误签）');
           continue;

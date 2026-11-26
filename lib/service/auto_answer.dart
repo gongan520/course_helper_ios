@@ -146,19 +146,17 @@ class AutoAnswerEngine {
           continue;
         }
 
-        // 课程归属校验：不属于该账号的课不接（避免替别人上课）
+        // 课程归属校验：用「该账号自己选修的课程 ID」作为权威数据源，
+        // 而不是 getCoursesList 的过滤结果（它接口失败/字段不匹配时返回 null 或空，
+        // 会导致归属校验被跳过，替别人上课）。
         Set<String>? ownCourseIds = _courseCache[user.uid];
         final cachedAt = _courseCacheAt[user.uid];
         final expired =
             cachedAt == null || DateTime.now().difference(cachedAt) > _courseCacheTtl;
         if (ownCourseIds == null || expired) {
           try {
-            final courses = await RCCourseApi.getCoursesList(onLesson, user.uid);
-            if (courses != null && courses.isNotEmpty) {
-              ownCourseIds = courses
-                  .map((c) => c.courseId)
-                  .where((id) => id.isNotEmpty)
-                  .toSet();
+            ownCourseIds = await RCCourseApi.getOwnCourseIds(userId: user.uid);
+            if (ownCourseIds != null && ownCourseIds.isNotEmpty) {
               _courseCache[user.uid] = ownCourseIds;
               _courseCacheAt[user.uid] = DateTime.now();
             }
@@ -172,9 +170,10 @@ class AutoAnswerEngine {
           if (lessonId == null || lessonId.isEmpty) continue;
 
           final courseId = lesson['courseId']?.toString() ?? '';
-          if (ownCourseIds != null &&
-              ownCourseIds.isNotEmpty &&
-              courseId.isNotEmpty &&
+          // 拿不到权威课程列表，或这节课的课程不在自己选修列表里，
+          // 一律不接（避免替别人上课）。
+          if (courseId.isEmpty ||
+              ownCourseIds == null ||
               !ownCourseIds.contains(courseId)) {
             continue;
           }
