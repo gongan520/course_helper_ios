@@ -453,28 +453,34 @@ class AutoAnswerEngine {
     if (!AiAnswerService().isEnabledFor(s.user.uid)) return;
 
     _answering.add(key);
+    final sw = Stopwatch()..start();
     try {
       // 题目内容来自课件，可能比解锁事件稍晚到。
       // 延长等待并主动补拉课件：老师一出题就解锁，此时课件若还没加载完，
       // 只在内存里等几秒会错过整道题 —— 这里是「上次半小时没答上」的主因之一。
+      // 整题预算：从解锁到提交 15 秒，全部算在里面。
+      final deadline = DateTime.now().add(const Duration(milliseconds: 15000));
+
       Problem? problem = _resolveProblem(s, problemId);
-      var waited = 0;
-      while (problem == null && waited < 15) {
-        await Future.delayed(const Duration(milliseconds: 1000));
-        waited += 1;
-        problem = _resolveProblem(s, problemId);
-        // 每 3 秒主动补拉一次课件（unlockproblem 可能先于 hello 的课件加载到达）
-        if (problem == null && waited % 3 == 0 && s.presentationId != null) {
-          final pid = s.presentationId!;
-          unawaited(_loadSlides(s, pid, force: true));
+      var rounds = 0;
+      // 最多等 5 秒（10 × 500ms），关键是「立刻补拉」而不是干等：
+      // 出题瞬间课件常常还没加载完，第 0 轮就 force 一次，通常 1~2 秒就能拿到题。
+      // 原来每 3 秒才补拉一次、最长干等 15 秒，光等题就把预算耗光了。
+      while (problem == null && rounds < 10) {
+        if (s.presentationId != null && (rounds == 0 || rounds == 4)) {
+          unawaited(_loadSlides(s, s.presentationId!, force: true));
         }
+        await Future.delayed(const Duration(milliseconds: 500));
+        rounds += 1;
+        problem = _resolveProblem(s, problemId);
       }
       if (problem == null) {
-        logger.w('后台答题：${s.user.name} 未找到题目 $problemId 的内容（等待 ${waited}s），跳过');
+        logger.w('后台答题：${s.user.name} 未找到题目 $problemId 的内容'
+            '（等待 ${rounds * 500}ms），跳过');
         return;
       }
 
-      final payload = await _buildAnswer(problem, uid: s.user.uid);
+      final payload = await _buildAnswer(problem, uid: s.user.uid, deadline: deadline);
       if (payload == null) {
         logger.w('后台答题：${s.user.name} 题目 $problemId AI 未生成答案');
         return;
@@ -497,7 +503,8 @@ class AutoAnswerEngine {
         _answered.add(key);
         _answered.add('${s.user.uid}|$submitId');
         final name = s.courseName ?? s.lessonId;
-        logger.i('后台答题成功：${s.user.name} · $name · 题目 $submitId');
+        logger.i('后台答题成功：${s.user.name} · $name · 题目 $submitId'
+            ' · 耗时 ${sw.elapsedMilliseconds}ms');
         _notify('AI 答题成功', '${s.user.name} 已在「$name」自动提交答案',
             threadId: s.user.uid);
       } else {
@@ -515,18 +522,46 @@ class AutoAnswerEngine {
   ///
   /// 题干是 HTML 片段：转成纯文本给模型，同时把里面的配图下载下来一起发过去。
   /// 只发文字时，波形图 / 电路图 / 表格截图这类题目模型完全看不到图，必然答错或答不出。
-  Future<_AnswerPayload?> _buildAnswer(Problem problem, {String? uid}) async {
+  ///
+  /// [deadline] 是整题截止时间（解锁起 15 秒）。图片下载和 AI 请求都按剩余时间
+  /// 动态收紧，任何一步卡住都不会把提交窗口拖过去。
+  Future<_AnswerPayload?> _buildAnswer(
+    Problem problem, {
+    String? uid,
+    DateTime? deadline,
+  }) async {
     final question = QuestionMedia.htmlToText(problem.body);
-    final images = await QuestionMedia.dataUrls(problem.body, uid: uid);
     final options = problem.options
             ?.map((o) => o.value)
             .where((v) => v.isNotEmpty)
             .toList() ??
         <String>[];
 
+    final isTextHeavy = problem.problemType == 4 || problem.problemType == 5;
+
+    // 图片：并行下载，最多 3 秒，且必须给后面的 AI 与提交留出时间
+    final remain = _remainingMs(deadline);
+    final imageBudget = remain > 4000
+        ? const Duration(seconds: 3)
+        : Duration(milliseconds: remain > 2500 ? remain - 2000 : 0);
+
+    final images = imageBudget.inMilliseconds <= 0
+        ? const <String>[]
+        : await QuestionMedia.dataUrls(
+            problem.body,
+            uid: uid,
+            // 选项题看一眼就能选，多传没用；主观题可能题干和图各一张
+            maxImages: isTextHeavy ? 2 : 1,
+            budget: imageBudget,
+          );
+
     if (images.isNotEmpty) {
       logger.i('题目 ${problem.problemId} 带 ${images.length} 张图，按多模态作答');
     }
+
+    // AI：剩余时间扣掉 1.5 秒留给提交，最少也给 2 秒搏一下
+    final aiMs = _remainingMs(deadline) - 1500;
+    final aiTimeout = Duration(milliseconds: aiMs < 2000 ? 2000 : aiMs);
 
     switch (problem.problemType) {
       case 1: // 单选（判断题在课件里也是单选）
@@ -534,7 +569,7 @@ class AutoAnswerEngine {
             question: question,
             type: 'single',
             options: options,
-            images: images);
+            images: images, timeout: aiTimeout);
         if (raw == null) return null;
         final key = _mapLetterToKey(raw, problem.options);
         return key == null ? null : _AnswerPayload(options: [key]);
@@ -545,14 +580,14 @@ class AutoAnswerEngine {
             question: question,
             type: 'multiple',
             options: options,
-            images: images);
+            images: images, timeout: aiTimeout);
         if (raw == null) return null;
         final keys = _mapLettersToKeys(raw, problem.options);
         return keys.isEmpty ? null : _AnswerPayload(options: keys);
 
       case 4: // 填空
         final raw = await AiAnswerService().answer(
-            question: question, type: 'blank', options: null, images: images);
+            question: question, type: 'blank', options: null, images: images, timeout: aiTimeout);
         if (raw == null) return null;
         final blanks = problem.blanks;
         if (blanks.isEmpty) return _AnswerPayload(options: [raw]);
@@ -567,10 +602,17 @@ class AutoAnswerEngine {
       case 5: // 主观题
       default:
         final raw = await AiAnswerService().answer(
-            question: question, type: 'short', options: null, images: images);
+            question: question, type: 'short', options: null, images: images, timeout: aiTimeout);
         if (raw == null) return null;
         return _AnswerPayload(content: raw, options: const []);
     }
+  }
+
+  /// 距离整题截止还剩多少毫秒。没给 deadline 时按 10 秒预算算。
+  static int _remainingMs(DateTime? deadline) {
+    if (deadline == null) return 10000;
+    final ms = deadline.difference(DateTime.now()).inMilliseconds;
+    return ms < 300 ? 300 : ms;
   }
 
   /// 把 AI 返回的单个字母映射为选项 key

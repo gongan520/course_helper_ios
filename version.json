@@ -1,6 +1,6 @@
 {
-  "version": "1.4.6",
-  "release_notes": "1. AI 答题提速：AI 接口超时从 60/90 秒降到 8/30 秒，不再因 AI 卡顿导致整题错过\n2. 题目解锁后等待课件的时间从 3 秒延长到 15 秒，并主动补拉课件，大幅减少「答不上」\n3. 后台答题引擎同步周期从 10 秒加快到 5 秒，更快接入课堂\n4. 旁听生课程不答题：未正式选修的课（不在学习列表内）一律跳过，只答自己的课",
-  "ipa_url": "https://github.com/gongan520/course_helper_ios/releases/download/v1.4.6/CourseHelper_1.4.6_unsigned.ipa",
+  "version": "1.4.7",
+  "release_notes": "1. 答题提速：整题控制在 15 秒内，所有题型一致\n2. 等课件从 15 秒压到 5 秒，并且出题瞬间就主动补拉，题目到手更快\n3. 题目图片改为并行下载、最多 3 秒，按题型限制张数\n4. AI 请求复用连接、超时收紧到 9 秒、按题型限制输出长度、图片自动降分辨率\n5. 新增整题 15 秒总预算：图片和 AI 按剩余时间动态分配，不会互相拖死\n6. 日志里会显示每道题的实际耗时",
+  "ipa_url": "https://github.com/gongan520/course_helper_ios/releases/download/v1.4.7/CourseHelper_1.4.7_unsigned.ipa",
   "page_url": "https://github.com/gongan520/course_helper_ios/releases/latest"
 }

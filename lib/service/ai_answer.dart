@@ -117,6 +117,49 @@ class AiAnswerService {
   /// 是否配置了专门的视觉模型（题目带图时用）。
   bool get hasVisionModel => config.visionModel.trim().isNotEmpty;
 
+  /// Dio 实例池。
+  ///
+  /// 原来每答一题都 `Dio(...)` 新建一个，等于每次重新做 DNS + TCP + TLS 握手，
+  /// 白花 0.3~1 秒。复用实例能走 keep-alive 连接，第二题起几乎没有握手开销。
+  static final Map<String, Dio> _dioPool = {};
+
+  static Dio _dioFor(String baseUrl) {
+    final raw = baseUrl.trim();
+    final key = raw.isEmpty ? 'https://api.deepseek.com' : raw;
+    return _dioPool.putIfAbsent(
+      key,
+      () => Dio(
+        BaseOptions(
+          baseUrl: key,
+          // 超时全部收紧：目标是「题目解锁到提交 15 秒内」。
+          // 连接 3 秒、整体 9 秒，给图片下载和提交各留出余量。
+          connectTimeout: const Duration(seconds: 3),
+          receiveTimeout: const Duration(seconds: 9),
+          sendTimeout: const Duration(seconds: 6),
+        ),
+      ),
+    );
+  }
+
+  /// 按题型限制输出长度。
+  ///
+  /// 不加限制时模型会把答案写成一整段解释，光等它生成就要好几秒。
+  /// 选项类只允许 8~16 个 token，基本上一个字都不多写。
+  static int _maxTokensFor(String type) {
+    switch (type) {
+      case 'single':
+      case 'judge':
+        // 留 16 而不是 8：有些模型会输出「答案：A」这种前缀，8 个 token 可能被截断
+        return 16;
+      case 'multiple':
+        return 32;
+      case 'blank':
+        return 200;
+      default:
+        return 600;
+    }
+  }
+
   /// 调用 AI 生成答案。
   ///
   /// [question]：题目文字（已去掉 HTML 标签）；
@@ -127,11 +170,15 @@ class AiAnswerService {
   ///   未配置则用 [AiAnswerConfig.model]（此时该模型必须支持看图）。
   ///
   /// 成功返回答案字符串，失败返回 null。
+  ///
+  /// [timeout] 覆盖默认的 9 秒整体超时。调用方按「整题总预算」传入剩余时间，
+  /// 保证从题目解锁到提交不超过 15 秒。
   Future<String?> answer({
     required String question,
     required String type,
     List<String>? options,
     List<String>? images,
+    Duration? timeout,
   }) async {
     final cfg = config;
     if (!isConfigured) {
@@ -147,27 +194,22 @@ class AiAnswerService {
     final model = hasImage && vision.isNotEmpty ? vision : cfg.model;
 
     final prompt = _buildPrompt(
-      question: question,
+      question: _trimQuestion(question),
       type: type,
       options: options,
       hasImage: hasImage,
     );
 
-    // 使用独立的 Dio 实例，避免污染学习通/雨课堂的 cookie/header。
-    // 超时要短：老师出的题常有时间限制，AI 卡住几十秒就等于答不上。
-    // 连接 8 秒、整体 30 秒足够覆盖绝大多数选择/填空/简答题。
-    final dio = Dio(
-      BaseOptions(
-        baseUrl: cfg.baseUrl,
-        connectTimeout: const Duration(seconds: 8),
-        receiveTimeout: const Duration(seconds: 30),
-      ),
-    );
-
+    final dio = _dioFor(cfg.baseUrl);
     final headers = {
       'Authorization': 'Bearer ${cfg.apiKey}',
       'Content-Type': 'application/json',
     };
+    // 单题总预算由调用方给，这里按剩余时间收紧，避免一条题把整节课的节奏拖住
+    final reqOptions = Options(
+      headers: headers,
+      receiveTimeout: timeout,
+    );
 
     Map<String, dynamic> payload(Object content) => {
           'model': model,
@@ -175,6 +217,7 @@ class AiAnswerService {
             {'role': 'user', 'content': content},
           ],
           'temperature': 0.1,
+          'max_tokens': _maxTokensFor(type),
           'stream': false,
         };
 
@@ -183,20 +226,21 @@ class AiAnswerService {
       try {
         response = await dio.post(
           '/chat/completions',
-          options: Options(headers: headers),
+          options: reqOptions,
           data: payload(hasImage ? _multiModalContent(prompt, pics) : prompt),
         );
       } on DioException catch (e) {
-        if (!hasImage) rethrow;
-        // 模型不支持图片输入时接口通常返回 400。这里退回纯文本再试一次，
-        // 至少能给出基于题干文字的部分答案，而不是整题空着。
-        logger.w(
-          'AI 答题：带图请求失败（${e.response?.statusCode}），退回纯文本重试。'
-          '如果长期失败，请在设置里填写支持看图的视觉模型',
-        );
+        // 只有「模型明确不接受图片」（400/415/422）才退回纯文本重试 ——
+        // 这种情况几乎瞬间返回，重试不亏。
+        // 超时（无 status）绝对不能重试：再等一轮 10 秒就直接冲出 15 秒了。
+        final status = e.response?.statusCode ?? 0;
+        final rejectedImage = status == 400 || status == 415 || status == 422;
+        if (!hasImage || !rejectedImage) rethrow;
+
+        logger.w('AI 答题：模型不接受图片（$status），退回纯文本');
         response = await dio.post(
           '/chat/completions',
-          options: Options(headers: headers),
+          options: reqOptions,
           data: payload(prompt),
         );
       }
@@ -217,7 +261,22 @@ class AiAnswerService {
     }
   }
 
+  /// 题干截断。
+  ///
+  /// PPT 里有些题干会把整页讲义都塞进来，几千字直接拖慢首字延迟。
+  /// 1500 字足够容纳任何一道题的题干，超出的部分对作答没有帮助。
+  static String _trimQuestion(String q) {
+    const limit = 1500;
+    final s = q.trim();
+    if (s.length <= limit) return s;
+    return '${s.substring(0, limit)}…';
+  }
+
   /// OpenAI 多模态格式：文本 + 若干图片。
+  ///
+  /// `detail: low` 让服务端先把图缩到 512×512 再推理：
+  /// 上传体积小（大图 base64 能到几 MB）、推理也快，是 15 秒目标的关键。
+  /// 波形图这类题如果因为缩图看不清，可以按题型把这里换成 original。
   static List<Map<String, dynamic>> _multiModalContent(
     String text,
     List<String> images,
@@ -227,7 +286,7 @@ class AiAnswerService {
       for (final img in images)
         {
           'type': 'image_url',
-          'image_url': {'url': img},
+          'image_url': {'url': img, 'detail': 'low'},
         },
     ];
   }

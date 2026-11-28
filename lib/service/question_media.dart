@@ -77,25 +77,42 @@ class QuestionMedia {
     return s.trim();
   }
 
-  /// 把题干里的图片全部转成 data URL。
+  /// 把题干里的图片转成 data URL。
   ///
-  /// [uid] 用于带上对应账号的 cookie —— 有些题目图片是需要登录态才能取的。
-  static Future<List<String>> dataUrls(String html, {String? uid}) async {
+  /// 速度优先：并行下载 + 总预算 4 秒，超时的那张直接放弃（题照样答，
+  /// 只是模型看不到这张图）。原来是串行、单张 20 秒超时，
+  /// 两三张图就能吃掉半分钟，根本进不了 15 秒。
+  ///
+  /// [maxImages] 默认只取第一张：题目配图绝大多数只有一张，
+  /// 多传一张就多一份 base64 上传体积和推理时间。
+  static Future<List<String>> dataUrls(
+    String html, {
+    String? uid,
+    int maxImages = 1,
+    Duration budget = const Duration(seconds: 4),
+  }) async {
     final urls = extractImageUrls(html);
     if (urls.isEmpty) return const [];
 
-    final out = <String>[];
-    for (final url in urls) {
-      final data = await dataUrl(url, uid: uid);
-      if (data != null) out.add(data);
-      // 单题最多带 3 张：再多意义不大，还会拉长响应时间
-      if (out.length >= 3) break;
-    }
-    return out;
+    final targets = urls.take(maxImages).toList();
+    final futures = targets.map((url) async {
+      try {
+        return await dataUrl(url, uid: uid, timeout: budget).timeout(budget);
+      } catch (_) {
+        return null;
+      }
+    }).toList();
+
+    final results = await Future.wait(futures);
+    return results.whereType<String>().toList();
   }
 
   /// 下载单张图片并转成 data URL；失败返回 null。
-  static Future<String?> dataUrl(String url, {String? uid}) async {
+  static Future<String?> dataUrl(
+    String url, {
+    String? uid,
+    Duration timeout = const Duration(seconds: 4),
+  }) async {
     final absolute = _absolute(url);
     if (_cache.containsKey(absolute)) return _cache[absolute];
 
@@ -104,7 +121,7 @@ class QuestionMedia {
         absolute,
         responseType: ResponseType.bytes,
         userId: uid,
-        receiveTimeoutSeconds: 20,
+        receiveTimeoutSeconds: timeout.inSeconds.clamp(2, 20),
         allowRedirects: false,
       );
       final raw = resp?.data;
